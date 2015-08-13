@@ -1,7 +1,12 @@
 FROM google/debian:wheezy
 
-RUN apt-get update
-RUN apt-get -yy -q install iptables ca-certificates
+RUN DEBIAN_FRONTEND=noninteractive apt-get update -y \
+    && DEBIAN_FRONTEND=noninteractive apt-get -yy -q \
+    install \
+    iptables \
+    ca-certificates \
+    && DEBIAN_FRONTEND=noninteractive apt-get autoremove -y \
+    && DEBIAN_FRONTEND=noninteractive apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 COPY hyperkube /hyperkube
 RUN chmod a+rx /hyperkube
 
