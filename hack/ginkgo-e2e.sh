@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash 
 
 # Copyright 2014 The Kubernetes Authors All rights reserved.
 #
@@ -78,13 +78,14 @@ fi
 
 ginkgo_args=()
 if [[ -n "${CONFORMANCE_TEST_SKIP_REGEX:-}" ]]; then
-  ginkgo_args+=("--skip=${CONFORMANCE_TEST_SKIP_REGEX}")
+  #ginkgo_args+=("--skip=${CONFORMANCE_TEST_SKIP_REGEX}")
   ginkgo_args+=("--seed=1436380640")
 fi
 if [[ ${GINKGO_PARALLEL} =~ ^[yY]$ ]]; then
   ginkgo_args+=("-p")
 fi
-
+ginkgo_args+=("--focus=Density")
+ginkgo_args+=("-v")
 
 # The --host setting is used only when providing --auth_config
 # If --kubeconfig is used, the host to use is retrieved from the .kubeconfig
@@ -93,7 +94,7 @@ fi
 export PATH=$(dirname "${e2e_test}"):"${PATH}"
 "${ginkgo}" "${ginkgo_args[@]:+${ginkgo_args[@]}}" "${e2e_test}" -- \
   "${auth_config[@]:+${auth_config[@]}}" \
-  --host="${KUBE_MASTER_URL}" \
+  --host="http://${KUBE_MASTER_IP:-}:8080" \
   --provider="${KUBERNETES_PROVIDER}" \
   --gce-project="${PROJECT:-}" \
   --gce-zone="${ZONE:-}" \

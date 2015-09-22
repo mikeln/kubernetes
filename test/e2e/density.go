@@ -109,18 +109,20 @@ var _ = Describe("Density", func() {
 		// Terminating a namespace (deleting the remaining objects from it - which
 		// generally means events) can affect the current run. Thus we wait for all
 		// terminating namespace to be finally deleted before starting this test.
+		Logf("MLN MLN MLN MLN 0")
 		err = deleteTestingNS(c)
 		expectNoError(err)
-
+		Logf("MLN MLN MLN MLN 1")
 		nsForTesting, err := createTestingNS("density", c)
-		ns = nsForTesting.Name
 		expectNoError(err)
+		ns = nsForTesting.Name
 		uuid = string(util.NewUUID())
 
 		expectNoError(resetMetrics(c))
 		expectNoError(os.Mkdir(fmt.Sprintf(testContext.OutputDir+"/%s", uuid), 0777))
 		expectNoError(writePerfData(c, fmt.Sprintf(testContext.OutputDir+"/%s", uuid), "before"))
-		gcloudListNodes()
+		// TODO: MLN GET NODES
+		//gcloudListNodes()
 	})
 
 	AfterEach(func() {

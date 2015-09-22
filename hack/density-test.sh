@@ -72,7 +72,7 @@ echo $HEAD_SHA
 echo "Conformance test version tag(s):"
 git show-ref | grep $HEAD_SHA | grep refs/tags
 echo
-echo "Conformance test checking conformance with Kubernetes version 1.0"
+echo "Conformance Density only test checking conformance with Kubernetes version 1.0"
 
 # It runs a whitelist of tests.  This whitelist was assembled at commit
 # b70b7084c93d4ce80b7463f48c23d5ac04edb2b1 starting from this list of tests:
@@ -107,5 +107,5 @@ echo "Conformance test checking conformance with Kubernetes version 1.0"
 
 declare -x KUBERNETES_CONFORMANCE_TEST="y"
 declare -x NUM_MINIONS=4
-hack/ginkgo-e2e.sh -ginkgo.focus=density
+hack/ginkgo-e2e.sh 
 exit $?
