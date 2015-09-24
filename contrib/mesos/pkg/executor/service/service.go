@@ -36,14 +36,17 @@ import (
 	"k8s.io/kubernetes/contrib/mesos/pkg/hyperkube"
 	"k8s.io/kubernetes/contrib/mesos/pkg/redirfd"
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/client/cache"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/credentialprovider"
+	"k8s.io/kubernetes/pkg/fields"
 	"k8s.io/kubernetes/pkg/healthz"
 	"k8s.io/kubernetes/pkg/kubelet"
 	"k8s.io/kubernetes/pkg/kubelet/cadvisor"
 	kconfig "k8s.io/kubernetes/pkg/kubelet/config"
 	"k8s.io/kubernetes/pkg/kubelet/dockertools"
 	"k8s.io/kubernetes/pkg/util"
+	utilio "k8s.io/kubernetes/pkg/util/io"
 	"k8s.io/kubernetes/pkg/util/mount"
 	"k8s.io/kubernetes/pkg/util/oom"
 
@@ -132,7 +135,7 @@ func (s *KubeletExecutorServer) Run(hks hyperkube.Interface, _ []string) error {
 		return err
 	}
 
-	cadvisorInterface, err := cadvisor.New(s.CadvisorPort)
+	cAdvisorInterface, err := cadvisor.New(s.CAdvisorPort)
 	if err != nil {
 		return err
 	}
@@ -168,11 +171,13 @@ func (s *KubeletExecutorServer) Run(hks hyperkube.Interface, _ []string) error {
 		mounter = &mount.NsenterMounter{}
 	}
 
+	var writer utilio.Writer = &utilio.StdWriter{}
 	var dockerExecHandler dockertools.ExecHandler
 	switch s.DockerExecHandlerName {
 	case "native":
 		dockerExecHandler = &dockertools.NativeExecHandler{}
 	case "nsenter":
+		writer = &utilio.NsenterWriter{}
 		dockerExecHandler = &dockertools.NsenterExecHandler{}
 	default:
 		log.Warningf("Unknown Docker exec handler %q; defaulting to native", s.DockerExecHandlerName)
@@ -203,7 +208,7 @@ func (s *KubeletExecutorServer) Run(hks hyperkube.Interface, _ []string) error {
 		Runonce:                        s.RunOnce,
 		Port:                           s.Port,
 		ReadOnlyPort:                   s.ReadOnlyPort,
-		CadvisorInterface:              cadvisorInterface,
+		CAdvisorInterface:              cAdvisorInterface,
 		EnableServer:                   s.EnableServer,
 		EnableDebuggingHandlers:        s.EnableDebuggingHandlers,
 		DockerClient:                   dockertools.ConnectToDockerOrDie(s.DockerEndpoint),
@@ -229,6 +234,8 @@ func (s *KubeletExecutorServer) Run(hks hyperkube.Interface, _ []string) error {
 		DockerExecHandler:         dockerExecHandler,
 		ResolverConfig:            s.ResolverConfig,
 		CPUCFSQuota:               s.CPUCFSQuota,
+		Writer:                    writer,
+		MaxOpenFiles:              s.MaxOpenFiles,
 	}
 
 	kcfg.NodeName = kcfg.Hostname
@@ -315,7 +322,7 @@ func (ks *KubeletExecutorServer) createAndInitKubelet(
 		kc.NetworkPluginName,
 		kc.StreamingConnectionIdleTimeout,
 		kc.Recorder,
-		kc.CadvisorInterface,
+		kc.CAdvisorInterface,
 		kc.ImageGCPolicy,
 		kc.DiskSpacePolicy,
 		kc.Cloud,
@@ -325,7 +332,9 @@ func (ks *KubeletExecutorServer) createAndInitKubelet(
 		kc.CgroupRoot,
 		kc.ContainerRuntime,
 		kc.RktPath,
+		kc.RktStage1Image,
 		kc.Mounter,
+		kc.Writer,
 		kc.DockerDaemonContainer,
 		kc.SystemContainer,
 		kc.ConfigureCBR0,
@@ -334,6 +343,9 @@ func (ks *KubeletExecutorServer) createAndInitKubelet(
 		kc.DockerExecHandler,
 		kc.ResolverConfig,
 		kc.CPUCFSQuota,
+		&api.NodeDaemonEndpoints{
+			KubeletEndpoint: api.DaemonEndpoint{Port: int(kc.Port)},
+		},
 	)
 	if err != nil {
 		return nil, nil, err
@@ -363,6 +375,7 @@ func (ks *KubeletExecutorServer) createAndInitKubelet(
 			return klet.GetRuntime().GetPodStatus(pod)
 		},
 		StaticPodsConfigPath: staticPodsConfigPath,
+		PodLW:                cache.NewListWatchFromClient(kc.KubeClient, "pods", api.NamespaceAll, fields.OneTermEqualSelector(client.PodHost, kc.NodeName)),
 	})
 
 	go exec.InitializeStaticPodsSource(func() {

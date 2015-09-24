@@ -79,8 +79,8 @@ done
 echo "127.0.0.1 localhost" >> /etc/hosts # enables cmds like 'kubectl get pods' on master.
 echo "$MASTER_IP $MASTER_NAME" >> /etc/hosts
 
-# Configure the openvswitch network
-provision-network
+# Configure the master network
+provision-network-master
 
 # Update salt configuration
 mkdir -p /etc/salt/minion.d
@@ -108,6 +108,7 @@ grains:
   runtime_config: '$(echo "$RUNTIME_CONFIG" | sed -e "s/'/''/g")'
   docker_opts: '$(echo "$DOCKER_OPTS" | sed -e "s/'/''/g")'
   master_extra_sans: '$(echo "$MASTER_EXTRA_SANS" | sed -e "s/'/''/g")'
+  keep_host_etcd: true
 EOF
 
 mkdir -p /srv/salt-overlay/pillar
@@ -253,6 +254,19 @@ pushd /kube-install
   ./kubernetes/saltbase/install.sh "${server_binary_tar##*/}"
 popd
 
+# Enable Fedora Cockpit on host to support Kubernetes administration
+# Access it by going to <master-ip>:9090 and login as vagrant/vagrant
+if ! which /usr/libexec/cockpit-ws &>/dev/null; then
+  
+  pushd /etc/yum.repos.d
+    wget https://copr.fedoraproject.org/coprs/sgallagh/cockpit-preview/repo/fedora-21/sgallagh-cockpit-preview-fedora-21.repo
+    yum install -y cockpit cockpit-kubernetes  
+  popd
+
+  systemctl enable cockpit.socket
+  systemctl start cockpit.socket
+fi
+
 # we will run provision to update code each time we test, so we do not want to do salt installs each time
 if ! which salt-master &>/dev/null; then
 
@@ -292,6 +306,28 @@ if ! which salt-minion >/dev/null 2>&1; then
 
   # Install Salt minion
   curl -sS -L --connect-timeout 20 --retry 6 --retry-delay 10 https://bootstrap.saltstack.com | sh -s
+
+  # Edit the Salt minion unit file to do restart always
+  # needed because vagrant uses this as basis for registration of nodes in cloud provider
+  # set a oom_score_adj to -999 to prevent our node from being killed with salt-master and then making kubelet NotReady
+  # because its not found in salt cloud provider call
+  cat <<EOF >/usr/lib/systemd/system/salt-minion.service 
+[Unit]
+Description=The Salt Minion
+After=syslog.target network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/salt-minion
+Restart=Always
+OOMScoreAdjust=-999
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl restart salt-minion.service
 
 else
   # Only run highstate when updating the config.  In the first-run case, Salt is

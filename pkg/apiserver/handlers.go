@@ -34,7 +34,6 @@ import (
 	"k8s.io/kubernetes/pkg/api/meta"
 	"k8s.io/kubernetes/pkg/auth/authorizer"
 	"k8s.io/kubernetes/pkg/httplog"
-	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/pkg/util/sets"
 )
 
@@ -93,17 +92,6 @@ func MaxInFlightLimit(c chan bool, longRunningRequestRE *regexp.Regexp, handler 
 		default:
 			tooManyRequests(w)
 		}
-	})
-}
-
-// RateLimit uses rl to rate limit accepting requests to 'handler'.
-func RateLimit(rl util.RateLimiter, handler http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if rl.CanAccept() {
-			handler.ServeHTTP(w, req)
-			return
-		}
-		tooManyRequests(w)
 	})
 }
 
@@ -228,6 +216,15 @@ func (tw *baseTimeoutWriter) Write(p []byte) (int, error) {
 		return 0, http.ErrHandlerTimeout
 	}
 	return tw.w.Write(p)
+}
+
+func (tw *baseTimeoutWriter) Flush() {
+	tw.mu.Lock()
+	defer tw.mu.Unlock()
+
+	if flusher, ok := tw.w.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func (tw *baseTimeoutWriter) WriteHeader(code int) {
@@ -486,6 +483,8 @@ func (r *APIRequestInfoResolver) GetAPIRequestInfo(req *http.Request) (APIReques
 			requestInfo.Verb = "get"
 		case "PUT":
 			requestInfo.Verb = "update"
+		case "PATCH":
+			requestInfo.Verb = "patch"
 		case "DELETE":
 			requestInfo.Verb = "delete"
 		}

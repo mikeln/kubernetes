@@ -51,6 +51,8 @@ KUBELET_TOKEN: $(yaml-quote ${KUBELET_TOKEN:-})
 KUBE_PROXY_TOKEN: $(yaml-quote ${KUBE_PROXY_TOKEN:-})
 ADMISSION_CONTROL: $(yaml-quote ${ADMISSION_CONTROL:-})
 MASTER_IP_RANGE: $(yaml-quote ${MASTER_IP_RANGE})
+ENABLE_HORIZONTAL_POD_AUTOSCALER: $(yaml-quote ${ENABLE_HORIZONTAL_POD_AUTOSCALER})
+RUNTIME_CONFIG: $(yaml-quote ${RUNTIME_CONFIG})
 CA_CERT: $(yaml-quote ${CA_CERT_BASE64:-})
 KUBELET_CERT: $(yaml-quote ${KUBELET_CERT_BASE64:-})
 KUBELET_KEY: $(yaml-quote ${KUBELET_KEY_BASE64:-})
@@ -145,7 +147,7 @@ function create-master-instance {
     --image "${MASTER_IMAGE}" \
     --tags "${MASTER_TAG}" \
     --network "${NETWORK}" \
-    --scopes "storage-ro,compute-rw,logging-write" \
+    --scopes "storage-ro,compute-rw,monitoring,logging-write" \
     --can-ip-forward \
     --metadata-from-file \
       "startup-script=${KUBE_ROOT}/cluster/gce/configure-vm.sh,kube-env=${KUBE_TEMP}/master-kube-env.yaml" \

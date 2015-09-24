@@ -46,7 +46,7 @@ This example shows how to build a simple, multi-tier web application using Kuber
   - [Step Three: Fire up the replicated slave pods](#step-three-fire-up-the-replicated-slave-pods)
   - [Step Four: Create the redis slave service](#step-four-create-the-redis-slave-service)
   - [Step Five: Create the frontend replicated pods](#step-five-create-the-frontend-replicated-pods)
-  - [Step Six: Set up the guestbook frontend service.](#step-six-set-up-the-guestbook-frontend-service)
+  - [Step Six: Set up the guestbook frontend service](#step-six-set-up-the-guestbook-frontend-service)
     - [Using 'type: LoadBalancer' for the frontend service (cloud-provider-specific)](#using-type-loadbalancer-for-the-frontend-service-cloud-provider-specific)
     - [Create the Frontend Service](#create-the-frontend-service)
     - [Accessing the guestbook site externally](#accessing-the-guestbook-site-externally)
@@ -577,7 +577,7 @@ redis-slave       10.0.21.92       <none>            6379/TCP      app-redis,rol
 
 You'll want to set up your guestbook service so that it can be accessed from outside of the internal Kubernetes network. Above, we introduced one way to do that, using the `type: LoadBalancer` spec.
 
-More generally, Kubernetes supports two ways of exposing a service onto an external IP address: `NodePort`s and `LoadBalancer`s , as described [here](../../docs/user-guide/services.md#external-services).
+More generally, Kubernetes supports two ways of exposing a service onto an external IP address: `NodePort`s and `LoadBalancer`s , as described [here](../../docs/user-guide/services.md#publishing-services---service-types).
 
 If the `LoadBalancer` specification is used, it can take a short period for an external IP to show up in `kubectl get services` output, but you should shortly see it listed as well, e.g. like this:
 

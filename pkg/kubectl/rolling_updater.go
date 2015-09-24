@@ -340,8 +340,7 @@ func (r *RollingUpdater) scaleDown(newRc, oldRc *api.ReplicationController, desi
 
 // scalerScaleAndWait scales a controller using a Scaler and a real client.
 func (r *RollingUpdater) scaleAndWaitWithScaler(rc *api.ReplicationController, retry *RetryParams, wait *RetryParams) (*api.ReplicationController, error) {
-	scalerClient := NewScalerClient(r.c)
-	scaler, err := ScalerFor("ReplicationController", scalerClient)
+	scaler, err := ScalerFor("ReplicationController", r.c)
 	if err != nil {
 		return nil, fmt.Errorf("Couldn't make scaler: %s", err)
 	}
@@ -353,7 +352,7 @@ func (r *RollingUpdater) scaleAndWaitWithScaler(rc *api.ReplicationController, r
 
 // pollForReadyPods polls oldRc and newRc each interval and returns the old
 // and new ready counts for their pods. If a pod is observed as being ready,
-// it's considered ready even if it later becomes unready.
+// it's considered ready even if it later becomes notReady.
 func (r *RollingUpdater) pollForReadyPods(interval, timeout time.Duration, oldRc, newRc *api.ReplicationController) (int, int, error) {
 	controllers := []*api.ReplicationController{oldRc, newRc}
 	oldReady := 0
@@ -452,8 +451,7 @@ func (r *RollingUpdater) cleanupWithClients(oldRc, newRc *api.ReplicationControl
 	if err != nil {
 		return err
 	}
-	scalerClient := NewScalerClient(r.c)
-	if err = wait.Poll(config.Interval, config.Timeout, scalerClient.ControllerHasDesiredReplicas(newRc)); err != nil {
+	if err = wait.Poll(config.Interval, config.Timeout, client.ControllerHasDesiredReplicas(r.c, newRc)); err != nil {
 		return err
 	}
 	newRc, err = r.c.ReplicationControllers(r.ns).Get(newRc.Name)

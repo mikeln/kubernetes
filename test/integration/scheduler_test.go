@@ -31,10 +31,11 @@ import (
 	"k8s.io/kubernetes/pkg/api/errors"
 	"k8s.io/kubernetes/pkg/api/resource"
 	"k8s.io/kubernetes/pkg/api/testapi"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/apiserver"
+	"k8s.io/kubernetes/pkg/client/cache"
+	"k8s.io/kubernetes/pkg/client/record"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
-	"k8s.io/kubernetes/pkg/client/unversioned/cache"
-	"k8s.io/kubernetes/pkg/client/unversioned/record"
 	"k8s.io/kubernetes/pkg/master"
 	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/pkg/util/wait"
@@ -75,6 +76,7 @@ func TestUnschedulableNodes(t *testing.T) {
 		APIPrefix:             "/api",
 		Authorizer:            apiserver.NewAlwaysAllowAuthorizer(),
 		AdmissionControl:      admit.NewAlwaysAdmit(),
+		StorageVersions:       map[string]string{"": testapi.Default.Version()},
 	})
 
 	restClient := client.NewOrDie(&client.Config{Host: s.URL, Version: testapi.Default.Version()})
@@ -127,13 +129,13 @@ func DoTestUnschedulableNodes(t *testing.T, restClient *client.Client, nodeStore
 		Type:              api.NodeReady,
 		Status:            api.ConditionTrue,
 		Reason:            fmt.Sprintf("schedulable condition"),
-		LastHeartbeatTime: util.Time{time.Now()},
+		LastHeartbeatTime: unversioned.Time{time.Now()},
 	}
 	badCondition := api.NodeCondition{
 		Type:              api.NodeReady,
 		Status:            api.ConditionUnknown,
 		Reason:            fmt.Sprintf("unschedulable condition"),
-		LastHeartbeatTime: util.Time{time.Now()},
+		LastHeartbeatTime: unversioned.Time{time.Now()},
 	}
 	// Create a new schedulable node, since we're first going to apply
 	// the unschedulable condition and verify that pods aren't scheduled.
@@ -252,7 +254,7 @@ func DoTestUnschedulableNodes(t *testing.T, restClient *client.Client, nodeStore
 		}
 
 		// There are no schedulable nodes - the pod shouldn't be scheduled.
-		err = wait.Poll(time.Second, time.Second*10, podScheduled(restClient, myPod.Namespace, myPod.Name))
+		err = wait.Poll(time.Second, util.ForeverTestTimeout, podScheduled(restClient, myPod.Namespace, myPod.Name))
 		if err == nil {
 			t.Errorf("Pod scheduled successfully on unschedulable nodes")
 		}
@@ -270,7 +272,7 @@ func DoTestUnschedulableNodes(t *testing.T, restClient *client.Client, nodeStore
 		mod.makeSchedulable(t, schedNode, nodeStore, restClient)
 
 		// Wait until the pod is scheduled.
-		err = wait.Poll(time.Second, time.Second*10, podScheduled(restClient, myPod.Namespace, myPod.Name))
+		err = wait.Poll(time.Second, util.ForeverTestTimeout, podScheduled(restClient, myPod.Namespace, myPod.Name))
 		if err != nil {
 			t.Errorf("Test %d: failed to schedule a pod: %v", i, err)
 		} else {

@@ -29,7 +29,6 @@ import (
 
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/errors"
-	"k8s.io/kubernetes/pkg/api/latest"
 	"k8s.io/kubernetes/pkg/api/testapi"
 	"k8s.io/kubernetes/pkg/util/sets"
 )
@@ -109,21 +108,6 @@ func TestMaxInFlight(t *testing.T) {
 
 	// Show that we recover from being blocked up.
 	expectHTTP(server.URL, http.StatusOK, t)
-}
-
-func TestRateLimit(t *testing.T) {
-	for _, allow := range []bool{true, false} {
-		rl := fakeRL(allow)
-		server := httptest.NewServer(RateLimit(rl, http.HandlerFunc(
-			func(w http.ResponseWriter, req *http.Request) {
-				if !allow {
-					t.Errorf("Unexpected call")
-				}
-			},
-		)))
-		defer server.Close()
-		http.Get(server.URL)
-	}
 }
 
 func TestReadOnly(t *testing.T) {
@@ -244,9 +228,13 @@ func TestGetAPIRequestInfo(t *testing.T) {
 		// subresource identification
 		{"GET", "/namespaces/other/pods/foo/status", "get", "", "other", "pods", "status", "Pod", "foo", []string{"pods", "foo", "status"}},
 		{"PUT", "/namespaces/other/finalize", "update", "", "other", "finalize", "", "", "", []string{"finalize"}},
+
+		// verb identification
+		{"PATCH", "/namespaces/other/pods/foo", "patch", "", "other", "pods", "", "Pod", "foo", []string{"pods", "foo"}},
+		{"DELETE", "/namespaces/other/pods/foo", "delete", "", "other", "pods", "", "Pod", "foo", []string{"pods", "foo"}},
 	}
 
-	apiRequestInfoResolver := &APIRequestInfoResolver{sets.NewString("api"), latest.RESTMapper}
+	apiRequestInfoResolver := &APIRequestInfoResolver{sets.NewString("api"), testapi.Default.RESTMapper()}
 
 	for _, successCase := range successCases {
 		req, _ := http.NewRequest(successCase.method, successCase.url, nil)

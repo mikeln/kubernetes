@@ -19,7 +19,6 @@ package replicationcontroller
 import (
 	"fmt"
 	"math/rand"
-	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
@@ -27,31 +26,24 @@ import (
 
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/testapi"
+	"k8s.io/kubernetes/pkg/api/unversioned"
+	"k8s.io/kubernetes/pkg/client/cache"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
-	"k8s.io/kubernetes/pkg/client/unversioned/cache"
 	"k8s.io/kubernetes/pkg/client/unversioned/testclient"
 	"k8s.io/kubernetes/pkg/controller"
-	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/securitycontext"
 	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/pkg/util/sets"
-	"k8s.io/kubernetes/pkg/util/wait"
 	"k8s.io/kubernetes/pkg/watch"
 )
 
 type FakePodControl struct {
-	controllerSpec []api.ReplicationController
+	controllerSpec []api.PodTemplateSpec
 	deletePodName  []string
 	lock           sync.Mutex
 	err            error
 }
-
-// Give each test that starts a background controller up to 1/2 a second.
-// Since we need to start up a goroutine to test watch, this routine needs
-// to get cpu before the test can complete. If the test is starved of cpu,
-// the watch test will take up to 1/2 a second before timing out.
-const controllerTimeout = 500 * time.Millisecond
 
 var alwaysReady = func() bool { return true }
 
@@ -59,13 +51,17 @@ func init() {
 	api.ForTesting_ReferencesAllowBlankSelfLinks = true
 }
 
-func (f *FakePodControl) CreateReplica(namespace string, spec *api.ReplicationController) error {
+func (f *FakePodControl) CreatePods(namespace string, spec *api.PodTemplateSpec, object runtime.Object) error {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 	if f.err != nil {
 		return f.err
 	}
 	f.controllerSpec = append(f.controllerSpec, *spec)
+	return nil
+}
+
+func (f *FakePodControl) CreatePodsOnNode(nodeName, namespace string, template *api.PodTemplateSpec, object runtime.Object) error {
 	return nil
 }
 
@@ -82,7 +78,7 @@ func (f *FakePodControl) clear() {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 	f.deletePodName = []string{}
-	f.controllerSpec = []api.ReplicationController{}
+	f.controllerSpec = []api.PodTemplateSpec{}
 }
 
 func getKey(rc *api.ReplicationController, t *testing.T) string {
@@ -96,7 +92,7 @@ func getKey(rc *api.ReplicationController, t *testing.T) string {
 
 func newReplicationController(replicas int) *api.ReplicationController {
 	rc := &api.ReplicationController{
-		TypeMeta: api.TypeMeta{APIVersion: testapi.Default.Version()},
+		TypeMeta: unversioned.TypeMeta{APIVersion: testapi.Default.Version()},
 		ObjectMeta: api.ObjectMeta{
 			UID:             util.NewUUID(),
 			Name:            "foobar",
@@ -174,51 +170,6 @@ type serverResponse struct {
 	obj        interface{}
 }
 
-func makeTestServer(t *testing.T, namespace, name string, podResponse, controllerResponse, updateResponse serverResponse) (*httptest.Server, *util.FakeHandler) {
-	fakePodHandler := util.FakeHandler{
-		StatusCode:   podResponse.statusCode,
-		ResponseBody: runtime.EncodeOrDie(testapi.Default.Codec(), podResponse.obj.(runtime.Object)),
-	}
-	fakeControllerHandler := util.FakeHandler{
-		StatusCode:   controllerResponse.statusCode,
-		ResponseBody: runtime.EncodeOrDie(testapi.Default.Codec(), controllerResponse.obj.(runtime.Object)),
-	}
-	fakeUpdateHandler := util.FakeHandler{
-		StatusCode:   updateResponse.statusCode,
-		ResponseBody: runtime.EncodeOrDie(testapi.Default.Codec(), updateResponse.obj.(runtime.Object)),
-	}
-	mux := http.NewServeMux()
-	mux.Handle(testapi.Default.ResourcePath("pods", namespace, ""), &fakePodHandler)
-	mux.Handle(testapi.Default.ResourcePath(replicationControllerResourceName(), "", ""), &fakeControllerHandler)
-	if namespace != "" {
-		mux.Handle(testapi.Default.ResourcePath(replicationControllerResourceName(), namespace, ""), &fakeControllerHandler)
-	}
-	if name != "" {
-		mux.Handle(testapi.Default.ResourcePath(replicationControllerResourceName(), namespace, name), &fakeUpdateHandler)
-	}
-	mux.HandleFunc("/", func(res http.ResponseWriter, req *http.Request) {
-		t.Errorf("unexpected request: %v", req.RequestURI)
-		res.WriteHeader(http.StatusNotFound)
-	})
-	return httptest.NewServer(mux), &fakeUpdateHandler
-}
-
-func startManagerAndWait(manager *ReplicationManager, pods int, t *testing.T) chan struct{} {
-	stopCh := make(chan struct{})
-	go manager.Run(1, stopCh)
-	err := wait.Poll(10*time.Millisecond, 100*time.Millisecond, func() (bool, error) {
-		podList, err := manager.podStore.List(labels.Everything())
-		if err != nil {
-			return false, err
-		}
-		return len(podList) == pods, nil
-	})
-	if err != nil {
-		t.Errorf("Failed to observe %d pods in 100ms", pods)
-	}
-	return stopCh
-}
-
 func TestSyncReplicationControllerDoesNothing(t *testing.T) {
 	client := client.NewOrDie(&client.Config{Host: "", Version: testapi.Default.Version()})
 	fakePodControl := FakePodControl{}
@@ -279,7 +230,7 @@ func TestDeleteFinalStateUnknown(t *testing.T) {
 		if key != expected {
 			t.Errorf("Unexpected sync all for rc %v, expected %v", key, expected)
 		}
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(util.ForeverTestTimeout):
 		t.Errorf("Processing DeleteFinalStateUnknown took longer than expected")
 	}
 }
@@ -538,7 +489,7 @@ func TestWatchControllers(t *testing.T) {
 
 	select {
 	case <-received:
-	case <-time.After(controllerTimeout):
+	case <-time.After(util.ForeverTestTimeout):
 		t.Errorf("Expected 1 call but got 0")
 	}
 }
@@ -583,7 +534,7 @@ func TestWatchPods(t *testing.T) {
 
 	select {
 	case <-received:
-	case <-time.After(controllerTimeout):
+	case <-time.After(util.ForeverTestTimeout):
 		t.Errorf("Expected 1 call but got 0")
 	}
 }
@@ -635,7 +586,7 @@ func TestUpdatePods(t *testing.T) {
 			if !expected.Has(got) {
 				t.Errorf("Expected keys %#v got %v", expected, got)
 			}
-		case <-time.After(controllerTimeout):
+		case <-time.After(util.ForeverTestTimeout):
 			t.Errorf("Expected update notifications for controllers within 100ms each")
 		}
 	}
@@ -675,7 +626,7 @@ func TestControllerUpdateRequeue(t *testing.T) {
 		if key != expectedKey {
 			t.Errorf("Expected requeue of controller with key %s got %s", expectedKey, key)
 		}
-	case <-time.After(controllerTimeout):
+	case <-time.After(util.ForeverTestTimeout):
 		manager.queue.ShutDown()
 		t.Errorf("Expected to find an rc in the queue, found none.")
 	}
@@ -964,7 +915,7 @@ func TestOverlappingRCs(t *testing.T) {
 		var controllers []*api.ReplicationController
 		for j := 1; j < 10; j++ {
 			controllerSpec := newReplicationController(1)
-			controllerSpec.CreationTimestamp = util.Date(2014, time.December, j, 0, 0, 0, 0, time.Local)
+			controllerSpec.CreationTimestamp = unversioned.Date(2014, time.December, j, 0, 0, 0, 0, time.Local)
 			controllerSpec.Name = string(util.NewUUID())
 			controllers = append(controllers, controllerSpec)
 		}
