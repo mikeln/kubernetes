@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -189,7 +189,7 @@ func NewKubeletServer() *KubeletServer {
 		NetworkPluginDir:            "/usr/libexec/kubernetes/kubelet-plugins/net/exec/",
 		NetworkPluginName:           "",
 		NodeStatusUpdateFrequency:   10 * time.Second,
-		OOMScoreAdj:                 qos.KubeletOomScoreAdj,
+		OOMScoreAdj:                 qos.KubeletOOMScoreAdj,
 		PodInfraContainerImage:      dockertools.PodInfraContainerImage,
 		Port:              ports.KubeletPort,
 		ReadOnlyPort:      ports.KubeletReadOnlyPort,
@@ -449,8 +449,8 @@ func (s *KubeletServer) Run(kcfg *KubeletConfig) error {
 	glog.V(2).Infof("Using root directory: %v", s.RootDirectory)
 
 	// TODO(vmarmol): Do this through container config.
-	oomAdjuster := oom.NewOomAdjuster()
-	if err := oomAdjuster.ApplyOomScoreAdj(0, s.OOMScoreAdj); err != nil {
+	oomAdjuster := oom.NewOOMAdjuster()
+	if err := oomAdjuster.ApplyOOMScoreAdj(0, s.OOMScoreAdj); err != nil {
 		glog.Warning(err)
 	}
 
@@ -599,8 +599,9 @@ func SimpleKubelet(client *client.Client,
 	configFilePath string,
 	cloud cloudprovider.Interface,
 	osInterface kubecontainer.OSInterface,
-	fileCheckFrequency, httpCheckFrequency, minimumGCAge, nodeStatusUpdateFrequency, syncFrequency time.Duration) *KubeletConfig {
-
+	fileCheckFrequency, httpCheckFrequency, minimumGCAge, nodeStatusUpdateFrequency, syncFrequency time.Duration,
+	maxPods int,
+) *KubeletConfig {
 	imageGCPolicy := kubelet.ImageGCPolicy{
 		HighThresholdPercent: 90,
 		LowThresholdPercent:  80,
@@ -634,7 +635,7 @@ func SimpleKubelet(client *client.Client,
 		MaxContainerCount:         100,
 		MaxOpenFiles:              1024,
 		MaxPerPodContainerCount:   2,
-		MaxPods:                   32,
+		MaxPods:                   maxPods,
 		MinimumGCAge:              minimumGCAge,
 		Mounter:                   mount.New(),
 		NodeStatusUpdateFrequency: nodeStatusUpdateFrequency,

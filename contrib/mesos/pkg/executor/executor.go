@@ -33,6 +33,7 @@ import (
 	mutil "github.com/mesos/mesos-go/mesosutil"
 	"k8s.io/kubernetes/contrib/mesos/pkg/archive"
 	"k8s.io/kubernetes/contrib/mesos/pkg/executor/messages"
+	"k8s.io/kubernetes/contrib/mesos/pkg/node"
 	"k8s.io/kubernetes/contrib/mesos/pkg/scheduler/meta"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/client/cache"
@@ -42,7 +43,6 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/kubelet/dockertools"
 	"k8s.io/kubernetes/pkg/util"
-	"k8s.io/kubernetes/pkg/watch"
 )
 
 const (
@@ -109,7 +109,6 @@ type KubernetesExecutor struct {
 	lock                 sync.RWMutex
 	sourcename           string
 	client               *client.Client
-	events               <-chan watch.Event
 	done                 chan struct{}                     // signals shutdown
 	outgoing             chan func() (mesos.Status, error) // outgoing queue to the mesos driver
 	dockerClient         dockertools.DockerInterface
@@ -131,7 +130,6 @@ type Config struct {
 	Updates              chan<- interface{} // to send pod config updates to the kubelet
 	SourceName           string
 	APIClient            *client.Client
-	Watch                watch.Interface
 	Docker               dockertools.DockerInterface
 	ShutdownAlert        func()
 	SuicideTimeout       time.Duration
@@ -167,20 +165,6 @@ func New(config Config) *KubernetesExecutor {
 		podStatusFunc:        config.PodStatusFunc,
 		initialRegComplete:   make(chan struct{}),
 		staticPodsConfigPath: config.StaticPodsConfigPath,
-	}
-
-	//TODO(jdef) do something real with these events..
-	if config.Watch != nil {
-		events := config.Watch.ResultChan()
-		if events != nil {
-			go func() {
-				for e := range events {
-					// e ~= watch.Event { ADDED, *api.Event }
-					log.V(1).Info(e)
-				}
-			}()
-			k.events = events
-		}
 	}
 
 	// watch pods from the given pod ListWatch
@@ -242,6 +226,13 @@ func (k *KubernetesExecutor) Registered(driver bindings.ExecutorDriver,
 		k.staticPodsConfig = executorInfo.Data
 	}
 
+	if slaveInfo != nil {
+		_, err := node.CreateOrUpdate(k.client, slaveInfo.GetHostname(), node.SlaveAttributesToLabels(slaveInfo.Attributes))
+		if err != nil {
+			log.Errorf("cannot update node labels: %v", err)
+		}
+	}
+
 	k.initialRegistration.Do(k.onInitialRegistration)
 }
 
@@ -256,11 +247,19 @@ func (k *KubernetesExecutor) Reregistered(driver bindings.ExecutorDriver, slaveI
 		log.Errorf("failed to reregister/transition to a connected state")
 	}
 
+	if slaveInfo != nil {
+		_, err := node.CreateOrUpdate(k.client, slaveInfo.GetHostname(), node.SlaveAttributesToLabels(slaveInfo.Attributes))
+		if err != nil {
+			log.Errorf("cannot update node labels: %v", err)
+		}
+	}
+
 	k.initialRegistration.Do(k.onInitialRegistration)
 }
 
 func (k *KubernetesExecutor) onInitialRegistration() {
 	defer close(k.initialRegComplete)
+
 	// emit an empty update to allow the mesos "source" to be marked as seen
 	k.updateChan <- kubelet.PodUpdate{
 		Pods:   []*api.Pod{},

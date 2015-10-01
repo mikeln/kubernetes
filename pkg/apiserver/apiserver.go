@@ -42,7 +42,6 @@ import (
 	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/pkg/util/errors"
 	"k8s.io/kubernetes/pkg/util/flushwriter"
-	"k8s.io/kubernetes/pkg/util/sets"
 	"k8s.io/kubernetes/pkg/version"
 
 	"github.com/emicklei/go-restful"
@@ -80,6 +79,10 @@ type APIGroupVersion struct {
 
 	Root    string
 	Version string
+
+	// APIRequestInfoResolver is used to parse URLs for the legacy proxy handler.  Don't use this for anything else
+	// TODO: refactor proxy handler to use sub resources
+	APIRequestInfoResolver *APIRequestInfoResolver
 
 	// ServerVersion controls the Kubernetes APIVersion used for common objects in the apiserver
 	// schema like api.Status, api.DeleteOptions, and api.ListOptions. Other implementors may
@@ -151,12 +154,10 @@ func (g *APIGroupVersion) UpdateREST(container *restful.Container) error {
 
 // newInstaller is a helper to create the installer.  Used by InstallREST and UpdateREST.
 func (g *APIGroupVersion) newInstaller() *APIInstaller {
-	info := &APIRequestInfoResolver{sets.NewString(strings.TrimPrefix(g.Root, "/")), g.Mapper}
-
 	prefix := path.Join(g.Root, g.Version)
 	installer := &APIInstaller{
 		group:             g,
-		info:              info,
+		info:              g.APIRequestInfoResolver,
 		prefix:            prefix,
 		minRequestTimeout: g.MinRequestTimeout,
 		proxyDialerFn:     g.ProxyDialerFn,
@@ -380,24 +381,32 @@ func isPrettyPrint(req *http.Request) bool {
 
 // writeJSON renders an object as JSON to the response.
 func writeJSON(statusCode int, codec runtime.Codec, object runtime.Object, w http.ResponseWriter, pretty bool) {
+	w.Header().Set("Content-Type", "application/json")
+	// We send the status code before we encode the object, so if we error, the status code stays but there will
+	// still be an error object.  This seems ok, the alternative is to validate the object before
+	// encoding, but this really should never happen, so it's wasted compute for every API request.
+	w.WriteHeader(statusCode)
+	if pretty {
+		prettyJSON(codec, object, w)
+		return
+	}
+	err := codec.EncodeToStream(object, w)
+	if err != nil {
+		errorJSONFatal(err, codec, w)
+	}
+}
+
+func prettyJSON(codec runtime.Codec, object runtime.Object, w http.ResponseWriter) {
+	formatted := &bytes.Buffer{}
 	output, err := codec.Encode(object)
 	if err != nil {
 		errorJSONFatal(err, codec, w)
+	}
+	if err := json.Indent(formatted, output, "", "  "); err != nil {
+		errorJSONFatal(err, codec, w)
 		return
 	}
-	if pretty {
-		// PR #2243: Pretty-print JSON by default.
-		formatted := &bytes.Buffer{}
-		err = json.Indent(formatted, output, "", "  ")
-		if err != nil {
-			errorJSONFatal(err, codec, w)
-			return
-		}
-		output = formatted.Bytes()
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	w.Write(output)
+	w.Write(formatted.Bytes())
 }
 
 // errorJSON renders an error to the response. Returns the HTTP status code of the error.

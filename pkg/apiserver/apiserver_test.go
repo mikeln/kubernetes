@@ -42,6 +42,7 @@ import (
 	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/util"
+	"k8s.io/kubernetes/pkg/util/sets"
 	"k8s.io/kubernetes/pkg/version"
 	"k8s.io/kubernetes/pkg/watch"
 	"k8s.io/kubernetes/plugin/pkg/admission/admit"
@@ -190,11 +191,16 @@ func handleLinker(storage map[string]rest.Storage, selfLinker runtime.SelfLinker
 	return handleInternal(true, storage, admissionControl, selfLinker)
 }
 
+func newTestAPIRequestInfoResolver() *APIRequestInfoResolver {
+	return &APIRequestInfoResolver{sets.NewString("api", "apis"), sets.NewString("api")}
+}
+
 func handleInternal(legacy bool, storage map[string]rest.Storage, admissionControl admission.Interface, selfLinker runtime.SelfLinker) http.Handler {
 	group := &APIGroupVersion{
 		Storage: storage,
 
 		Root: "/api",
+		APIRequestInfoResolver: newTestAPIRequestInfoResolver(),
 
 		Creater:   api.Scheme,
 		Convertor: api.Scheme,
@@ -2014,12 +2020,13 @@ func TestCreateChecksDecode(t *testing.T) {
 func TestUpdateREST(t *testing.T) {
 	makeGroup := func(storage map[string]rest.Storage) *APIGroupVersion {
 		return &APIGroupVersion{
-			Storage:   storage,
-			Root:      "/api",
-			Creater:   api.Scheme,
-			Convertor: api.Scheme,
-			Typer:     api.Scheme,
-			Linker:    selfLinker,
+			Storage: storage,
+			Root:    "/api",
+			APIRequestInfoResolver: newTestAPIRequestInfoResolver(),
+			Creater:                api.Scheme,
+			Convertor:              api.Scheme,
+			Typer:                  api.Scheme,
+			Linker:                 selfLinker,
 
 			Admit:   admissionControl,
 			Context: requestContextMapper,
@@ -2096,11 +2103,12 @@ func TestParentResourceIsRequired(t *testing.T) {
 		Storage: map[string]rest.Storage{
 			"simple/sub": storage,
 		},
-		Root:      "/api",
-		Creater:   api.Scheme,
-		Convertor: api.Scheme,
-		Typer:     api.Scheme,
-		Linker:    selfLinker,
+		Root: "/api",
+		APIRequestInfoResolver: newTestAPIRequestInfoResolver(),
+		Creater:                api.Scheme,
+		Convertor:              api.Scheme,
+		Typer:                  api.Scheme,
+		Linker:                 selfLinker,
 
 		Admit:   admissionControl,
 		Context: requestContextMapper,
@@ -2124,11 +2132,12 @@ func TestParentResourceIsRequired(t *testing.T) {
 			"simple":     &SimpleRESTStorage{},
 			"simple/sub": storage,
 		},
-		Root:      "/api",
-		Creater:   api.Scheme,
-		Convertor: api.Scheme,
-		Typer:     api.Scheme,
-		Linker:    selfLinker,
+		Root: "/api",
+		APIRequestInfoResolver: newTestAPIRequestInfoResolver(),
+		Creater:                api.Scheme,
+		Convertor:              api.Scheme,
+		Typer:                  api.Scheme,
+		Linker:                 selfLinker,
 
 		Admit:   admissionControl,
 		Context: requestContextMapper,
@@ -2432,9 +2441,8 @@ func expectApiStatus(t *testing.T, method, url string, data []byte, code int) *u
 		return nil
 	}
 	var status unversioned.Status
-	_, err = extractBody(response, &status)
-	if err != nil {
-		t.Fatalf("unexpected error on %s %s: %v", method, url, err)
+	if body, err := extractBody(response, &status); err != nil {
+		t.Fatalf("unexpected error on %s %s: %v\nbody:\n%s", method, url, err, body)
 		return nil
 	}
 	if code != response.StatusCode {
@@ -2470,7 +2478,10 @@ func TestWriteJSONDecodeError(t *testing.T) {
 		writeJSON(http.StatusOK, codec, &UnregisteredAPIObject{"Undecodable"}, w, false)
 	}))
 	defer server.Close()
-	status := expectApiStatus(t, "GET", server.URL, nil, http.StatusInternalServerError)
+	// We send a 200 status code before we encode the object, so we expect OK, but there will
+	// still be an error object.  This seems ok, the alternative is to validate the object before
+	// encoding, but this really should never happen, so it's wasted compute for every API request.
+	status := expectApiStatus(t, "GET", server.URL, nil, http.StatusOK)
 	if status.Reason != unversioned.StatusReasonUnknown {
 		t.Errorf("unexpected reason %#v", status)
 	}
