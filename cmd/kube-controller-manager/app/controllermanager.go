@@ -25,6 +25,7 @@ package app
 import (
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/http/pprof"
@@ -78,6 +79,7 @@ type CMServer struct {
 	TerminatedPodGCThreshold          int
 	HorizontalPodAutoscalerSyncPeriod time.Duration
 	DeploymentControllerSyncPeriod    time.Duration
+	MinResyncPeriod                   time.Duration
 	RegisterRetryCount                int
 	NodeMonitorGracePeriod            time.Duration
 	NodeStartupGracePeriod            time.Duration
@@ -89,12 +91,11 @@ type CMServer struct {
 	ServiceAccountKeyFile             string
 	RootCAFile                        string
 
-	ClusterName                   string
-	ClusterCIDR                   net.IPNet
-	AllocateNodeCIDRs             bool
-	EnableProfiling               bool
-	EnableHorizontalPodAutoscaler bool
-	EnableDeploymentController    bool
+	ClusterName        string
+	ClusterCIDR        net.IPNet
+	AllocateNodeCIDRs  bool
+	EnableProfiling    bool
+	EnableExperimental bool
 
 	Master     string
 	Kubeconfig string
@@ -115,12 +116,11 @@ func NewCMServer() *CMServer {
 		NamespaceSyncPeriod:               5 * time.Minute,
 		PVClaimBinderSyncPeriod:           10 * time.Second,
 		HorizontalPodAutoscalerSyncPeriod: 30 * time.Second,
-		DeploymentControllerSyncPeriod:    1 * time.Minute,
+		DeploymentControllerSyncPeriod:    30 * time.Second,
+		MinResyncPeriod:                   12 * time.Hour,
 		RegisterRetryCount:                10,
 		PodEvictionTimeout:                5 * time.Minute,
 		ClusterName:                       "kubernetes",
-		EnableHorizontalPodAutoscaler:     false,
-		EnableDeploymentController:        false,
 		VolumeConfigFlags: VolumeConfigFlags{
 			// default values here
 			PersistentVolumeRecyclerMinimumTimeoutNFS:        300,
@@ -160,6 +160,7 @@ func (s *CMServer) AddFlags(fs *pflag.FlagSet) {
 	fs.DurationVar(&s.ResourceQuotaSyncPeriod, "resource-quota-sync-period", s.ResourceQuotaSyncPeriod, "The period for syncing quota usage status in the system")
 	fs.DurationVar(&s.NamespaceSyncPeriod, "namespace-sync-period", s.NamespaceSyncPeriod, "The period for syncing namespace life-cycle updates")
 	fs.DurationVar(&s.PVClaimBinderSyncPeriod, "pvclaimbinder-sync-period", s.PVClaimBinderSyncPeriod, "The period for syncing persistent volumes and persistent volume claims")
+	fs.DurationVar(&s.MinResyncPeriod, "min-resync-period", s.MinResyncPeriod, "The resync period in reflectors will be random between MinResyncPeriod and 2*MinResyncPeriod")
 	fs.StringVar(&s.VolumeConfigFlags.PersistentVolumeRecyclerPodTemplateFilePathNFS, "pv-recycler-pod-template-filepath-nfs", s.VolumeConfigFlags.PersistentVolumeRecyclerPodTemplateFilePathNFS, "The file path to a pod definition used as a template for NFS persistent volume recycling")
 	fs.IntVar(&s.VolumeConfigFlags.PersistentVolumeRecyclerMinimumTimeoutNFS, "pv-recycler-minimum-timeout-nfs", s.VolumeConfigFlags.PersistentVolumeRecyclerMinimumTimeoutNFS, "The minimum ActiveDeadlineSeconds to use for an NFS Recycler pod")
 	fs.IntVar(&s.VolumeConfigFlags.PersistentVolumeRecyclerIncrementTimeoutNFS, "pv-recycler-increment-timeout-nfs", s.VolumeConfigFlags.PersistentVolumeRecyclerIncrementTimeoutNFS, "the increment of time added per Gi to ActiveDeadlineSeconds for an NFS scrubber pod")
@@ -191,8 +192,12 @@ func (s *CMServer) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&s.Master, "master", s.Master, "The address of the Kubernetes API server (overrides any value in kubeconfig)")
 	fs.StringVar(&s.Kubeconfig, "kubeconfig", s.Kubeconfig, "Path to kubeconfig file with authorization and master location information.")
 	fs.StringVar(&s.RootCAFile, "root-ca-file", s.RootCAFile, "If set, this root certificate authority will be included in service account's token secret. This must be a valid PEM-encoded CA bundle.")
-	fs.BoolVar(&s.EnableHorizontalPodAutoscaler, "enable-horizontal-pod-autoscaler", s.EnableHorizontalPodAutoscaler, "Enables horizontal pod autoscaler (requires enabling experimental API on apiserver). NOT IMPLEMENTED YET!")
-	fs.BoolVar(&s.EnableDeploymentController, "enable-deployment-controller", s.EnableDeploymentController, "Enables deployment controller (requires enabling experimental API on apiserver). NOT IMPLEMENTED YET!")
+	fs.BoolVar(&s.EnableExperimental, "enable-experimental", s.EnableExperimental, "Enables experimental controllers (requires enabling experimental API on apiserver).")
+}
+
+func (s *CMServer) resyncPeriod() time.Duration {
+	factor := rand.Float64() + 1
+	return time.Duration(float64(s.MinResyncPeriod.Nanoseconds()) * factor)
 }
 
 // Run runs the CMServer.  This should never exit.
@@ -235,20 +240,14 @@ func (s *CMServer) Run(_ []string) error {
 		glog.Fatal(server.ListenAndServe())
 	}()
 
-	endpoints := endpointcontroller.NewEndpointController(kubeClient)
-	go endpoints.Run(s.ConcurrentEndpointSyncs, util.NeverStop)
+	go endpointcontroller.NewEndpointController(kubeClient, s.resyncPeriod).
+		Run(s.ConcurrentEndpointSyncs, util.NeverStop)
 
-	controllerManager := replicationControllerPkg.NewReplicationManager(kubeClient, replicationControllerPkg.BurstReplicas)
-	go controllerManager.Run(s.ConcurrentRCSyncs, util.NeverStop)
-
-	go daemon.NewDaemonSetsController(kubeClient).
-		Run(s.ConcurrentDSCSyncs, util.NeverStop)
-
-	go job.NewJobController(kubeClient).
-		Run(s.ConcurrentJobSyncs, util.NeverStop)
+	go replicationControllerPkg.NewReplicationManager(kubeClient, s.resyncPeriod, replicationControllerPkg.BurstReplicas).
+		Run(s.ConcurrentRCSyncs, util.NeverStop)
 
 	if s.TerminatedPodGCThreshold > 0 {
-		go gc.New(kubeClient, s.TerminatedPodGCThreshold).
+		go gc.New(kubeClient, s.resyncPeriod, s.TerminatedPodGCThreshold).
 			Run(util.NeverStop)
 	}
 
@@ -259,6 +258,7 @@ func (s *CMServer) Run(_ []string) error {
 
 	nodeController := nodecontroller.NewNodeController(cloud, kubeClient,
 		s.PodEvictionTimeout, util.NewTokenBucketRateLimiter(s.DeletingPodsQps, s.DeletingPodsBurst),
+		util.NewTokenBucketRateLimiter(s.DeletingPodsQps, s.DeletingPodsBurst),
 		s.NodeMonitorGracePeriod, s.NodeStartupGracePeriod, s.NodeMonitorPeriod, &s.ClusterCIDR, s.AllocateNodeCIDRs)
 	nodeController.Run(s.NodeSyncPeriod)
 
@@ -278,21 +278,22 @@ func (s *CMServer) Run(_ []string) error {
 		}
 	}
 
-	resourceQuotaController := resourcequotacontroller.NewResourceQuotaController(kubeClient)
-	resourceQuotaController.Run(s.ResourceQuotaSyncPeriod)
+	resourcequotacontroller.NewResourceQuotaController(kubeClient).Run(s.ResourceQuotaSyncPeriod)
 
-	// An OR of all flags to enable/disable experimental features
-	experimentalMode := s.EnableHorizontalPodAutoscaler || s.EnableDeploymentController
-	namespaceController := namespacecontroller.NewNamespaceController(kubeClient, experimentalMode, s.NamespaceSyncPeriod)
-	namespaceController.Run()
+	namespacecontroller.NewNamespaceController(kubeClient, s.EnableExperimental, s.NamespaceSyncPeriod).Run()
 
-	if s.EnableHorizontalPodAutoscaler {
-		horizontalPodAutoscalerController := podautoscaler.NewHorizontalController(kubeClient, metrics.NewHeapsterMetricsClient(kubeClient))
-		horizontalPodAutoscalerController.Run(s.HorizontalPodAutoscalerSyncPeriod)
-	}
-	if s.EnableDeploymentController {
-		deploymentController := deployment.New(kubeClient)
-		deploymentController.Run(s.DeploymentControllerSyncPeriod)
+	if s.EnableExperimental {
+		go daemon.NewDaemonSetsController(kubeClient, s.resyncPeriod).
+			Run(s.ConcurrentDSCSyncs, util.NeverStop)
+
+		go job.NewJobController(kubeClient, s.resyncPeriod).
+			Run(s.ConcurrentJobSyncs, util.NeverStop)
+
+		podautoscaler.NewHorizontalController(kubeClient, metrics.NewHeapsterMetricsClient(kubeClient)).
+			Run(s.HorizontalPodAutoscalerSyncPeriod)
+
+		deployment.New(kubeClient).
+			Run(s.DeploymentControllerSyncPeriod)
 	}
 
 	pvclaimBinder := volumeclaimbinder.NewPersistentVolumeClaimBinder(kubeClient, s.PVClaimBinderSyncPeriod)

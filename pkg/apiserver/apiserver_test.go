@@ -332,6 +332,7 @@ type SimpleRESTStorage struct {
 	// The id requested, and location to return for ResourceLocation
 	requestedResourceLocationID string
 	resourceLocation            *url.URL
+	resourceLocationTransport   http.RoundTripper
 	expectedResourceNamespace   string
 
 	// If non-nil, called inside the WorkFunc when answering update, delete, create.
@@ -477,7 +478,7 @@ func (storage *SimpleRESTStorage) ResourceLocation(ctx api.Context, id string) (
 	}
 	// Make a copy so the internal URL never gets mutated
 	locationCopy := *storage.resourceLocation
-	return &locationCopy, nil, nil
+	return &locationCopy, storage.resourceLocationTransport, nil
 }
 
 // Implement Connecter
@@ -1665,7 +1666,7 @@ func TestPatch(t *testing.T) {
 
 	client := http.Client{}
 	request, err := http.NewRequest("PATCH", server.URL+"/api/version/namespaces/default/simple/"+ID, bytes.NewReader([]byte(`{"labels":{"foo":"bar"}}`)))
-	request.Header.Set("Content-Type", "application/merge-patch+json")
+	request.Header.Set("Content-Type", "application/merge-patch+json; charset=UTF-8")
 	_, err = client.Do(request)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)

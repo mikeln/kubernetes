@@ -318,9 +318,8 @@ func TestExampleObjectSchemas(t *testing.T) {
 			"secret":                     nil,
 		},
 		"../examples/phabricator": {
-			"authenticator-controller": &api.ReplicationController{},
-			"phabricator-controller":   &api.ReplicationController{},
-			"phabricator-service":      &api.Service{},
+			"phabricator-controller": &api.ReplicationController{},
+			"phabricator-service":    &api.Service{},
 		},
 		"../examples/redis": {
 			"redis-controller":          &api.ReplicationController{},
@@ -366,6 +365,10 @@ func TestExampleObjectSchemas(t *testing.T) {
 		},
 		"../examples/experimental": {
 			"deployment": &experimental.Deployment{},
+		},
+		"../examples/javaweb-tomcat-sidecar": {
+			"javaweb":   &api.Pod{},
+			"javaweb-2": &api.Pod{},
 		},
 	}
 

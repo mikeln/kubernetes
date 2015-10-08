@@ -109,7 +109,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpa experimental.HorizontalPo
 		// Going down only if the usageRatio dropped significantly below the target
 		// and there was no rescaling in the last downscaleForbiddenWindow.
 		if desiredReplicas < currentReplicas && usageRatio < (1-tolerance) &&
-			(hpa.Status == nil || hpa.Status.LastScaleTimestamp == nil ||
+			(hpa.Status.LastScaleTimestamp == nil ||
 				hpa.Status.LastScaleTimestamp.Add(downscaleForbiddenWindow).Before(now)) {
 			rescale = true
 		}
@@ -117,7 +117,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpa experimental.HorizontalPo
 		// Going up only if the usage ratio increased significantly above the target
 		// and there was no rescaling in the last upscaleForbiddenWindow.
 		if desiredReplicas > currentReplicas && usageRatio > (1+tolerance) &&
-			(hpa.Status == nil || hpa.Status.LastScaleTimestamp == nil ||
+			(hpa.Status.LastScaleTimestamp == nil ||
 				hpa.Status.LastScaleTimestamp.Add(upscaleForbiddenWindow).Before(now)) {
 			rescale = true
 		}
@@ -131,16 +131,17 @@ func (a *HorizontalController) reconcileAutoscaler(hpa experimental.HorizontalPo
 			return fmt.Errorf("failed to rescale %s: %v", reference, err)
 		}
 		a.eventRecorder.Eventf(&hpa, "SuccessfulRescale", "New size: %d", desiredReplicas)
+		glog.Infof("Successfull rescale of %s, old size: %d, new size: %d, usage ratio: %f",
+			hpa.Name, currentReplicas, desiredReplicas, usageRatio)
 	} else {
 		desiredReplicas = currentReplicas
 	}
 
-	status := experimental.HorizontalPodAutoscalerStatus{
+	hpa.Status = experimental.HorizontalPodAutoscalerStatus{
 		CurrentReplicas:    currentReplicas,
 		DesiredReplicas:    desiredReplicas,
 		CurrentConsumption: currentConsumption,
 	}
-	hpa.Status = &status
 	if rescale {
 		now := unversioned.NewTime(now)
 		hpa.Status.LastScaleTimestamp = &now

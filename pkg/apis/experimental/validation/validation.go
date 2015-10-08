@@ -17,7 +17,11 @@ limitations under the License.
 package validation
 
 import (
+	"fmt"
+	"net"
+	"regexp"
 	"strconv"
+	"strings"
 
 	"k8s.io/kubernetes/pkg/api"
 	apivalidation "k8s.io/kubernetes/pkg/api/validation"
@@ -27,9 +31,18 @@ import (
 	errs "k8s.io/kubernetes/pkg/util/fielderrors"
 	"k8s.io/kubernetes/pkg/util/sets"
 	"k8s.io/kubernetes/pkg/util/validation"
+	utilvalidation "k8s.io/kubernetes/pkg/util/validation"
 )
 
 const isNegativeErrorMsg string = `must be non-negative`
+
+// TODO: Expose from apivalidation instead of duplicating.
+func intervalErrorMsg(lo, hi int) string {
+	return fmt.Sprintf(`must be greater than %d and less than %d`, lo, hi)
+}
+
+var portRangeErrorMsg string = intervalErrorMsg(0, 65536)
+var portNameErrorMsg string = fmt.Sprintf(`must be an IANA_SVC_NAME (at most 15 characters, matching regex %s, it must contain at least one letter [a-z], and hyphens cannot be adjacent to other hyphens): e.g. "http"`, validation.IdentifierNoHyphensBeginEndFmt)
 
 // ValidateHorizontalPodAutoscaler can be used to check whether the given autoscaler name is valid.
 // Prefix indicates this name will be used as part of generation, in which case trailing dashes are allowed.
@@ -41,7 +54,7 @@ func ValidateHorizontalPodAutoscalerName(name string, prefix bool) (bool, string
 func validateHorizontalPodAutoscalerSpec(autoscaler experimental.HorizontalPodAutoscalerSpec) errs.ValidationErrorList {
 	allErrs := errs.ValidationErrorList{}
 	if autoscaler.MinReplicas < 0 {
-		allErrs = append(allErrs, errs.NewFieldInvalid("minReplicas", autoscaler.MinReplicas, `must be non-negative`))
+		allErrs = append(allErrs, errs.NewFieldInvalid("minReplicas", autoscaler.MinReplicas, isNegativeErrorMsg))
 	}
 	if autoscaler.MaxReplicas < autoscaler.MinReplicas {
 		allErrs = append(allErrs, errs.NewFieldInvalid("maxReplicas", autoscaler.MaxReplicas, `must be bigger or equal to minReplicas`))
@@ -55,7 +68,7 @@ func validateHorizontalPodAutoscalerSpec(autoscaler experimental.HorizontalPodAu
 	}
 	quantity := autoscaler.Target.Quantity.Value()
 	if quantity < 0 {
-		allErrs = append(allErrs, errs.NewFieldInvalid("target.quantity", quantity, "must be non-negative"))
+		allErrs = append(allErrs, errs.NewFieldInvalid("target.quantity", quantity, isNegativeErrorMsg))
 	}
 	return allErrs
 }
@@ -369,5 +382,159 @@ func ValidateJobSpecUpdate(oldSpec, spec experimental.JobSpec) errs.ValidationEr
 func ValidateJobStatusUpdate(oldStatus, status experimental.JobStatus) errs.ValidationErrorList {
 	allErrs := errs.ValidationErrorList{}
 	allErrs = append(allErrs, ValidateJobStatus(&status)...)
+	return allErrs
+}
+
+// ValidateIngress tests if required fields in the Ingress are set.
+func ValidateIngress(ingress *experimental.Ingress) errs.ValidationErrorList {
+	allErrs := errs.ValidationErrorList{}
+	allErrs = append(allErrs, apivalidation.ValidateObjectMeta(&ingress.ObjectMeta, true, ValidateIngressName).Prefix("metadata")...)
+	allErrs = append(allErrs, ValidateIngressSpec(&ingress.Spec).Prefix("spec")...)
+	return allErrs
+}
+
+// ValidateIngressName validates that the given name can be used as an Ingress name.
+func ValidateIngressName(name string, prefix bool) (bool, string) {
+	return apivalidation.NameIsDNSSubdomain(name, prefix)
+}
+
+// ValidateIngressSpec tests if required fields in the IngressSpec are set.
+func ValidateIngressSpec(spec *experimental.IngressSpec) errs.ValidationErrorList {
+	allErrs := errs.ValidationErrorList{}
+	// TODO: Is a default backend mandatory?
+	if spec.Backend != nil {
+		allErrs = append(allErrs, validateIngressBackend(spec.Backend).Prefix("backend")...)
+	} else if len(spec.Rules) == 0 {
+		allErrs = append(allErrs, errs.NewFieldInvalid("rules", spec.Rules, "Either a default backend or a set of host rules are required for ingress."))
+	}
+	if len(spec.Rules) > 0 {
+		allErrs = append(allErrs, validateIngressRules(spec.Rules).Prefix("rules")...)
+	}
+	return allErrs
+}
+
+// ValidateIngressUpdate tests if required fields in the Ingress are set.
+func ValidateIngressUpdate(oldIngress, ingress *experimental.Ingress) errs.ValidationErrorList {
+	allErrs := errs.ValidationErrorList{}
+	allErrs = append(allErrs, apivalidation.ValidateObjectMetaUpdate(&ingress.ObjectMeta, &oldIngress.ObjectMeta).Prefix("metadata")...)
+	allErrs = append(allErrs, ValidateIngressSpec(&ingress.Spec).Prefix("spec")...)
+	return allErrs
+}
+
+func validateIngressRules(IngressRules []experimental.IngressRule) errs.ValidationErrorList {
+	allErrs := errs.ValidationErrorList{}
+	if len(IngressRules) == 0 {
+		return append(allErrs, errs.NewFieldRequired("IngressRules"))
+	}
+	for _, ih := range IngressRules {
+		if len(ih.Host) > 0 {
+			// TODO: Ports and ips are allowed in the host part of a url
+			// according to RFC 3986, consider allowing them.
+			if valid, errMsg := apivalidation.NameIsDNSSubdomain(ih.Host, false); !valid {
+				allErrs = append(allErrs, errs.NewFieldInvalid("host", ih.Host, errMsg))
+			}
+			if isIP := (net.ParseIP(ih.Host) != nil); isIP {
+				allErrs = append(allErrs, errs.NewFieldInvalid("host", ih.Host, "Host must be a DNS name, not ip address"))
+			}
+		}
+		allErrs = append(allErrs, validateIngressRuleValue(&ih.IngressRuleValue).Prefix("ingressRule")...)
+	}
+	return allErrs
+}
+
+func validateIngressRuleValue(ingressRule *experimental.IngressRuleValue) errs.ValidationErrorList {
+	allErrs := errs.ValidationErrorList{}
+	if ingressRule.HTTP != nil {
+		allErrs = append(allErrs, validateHTTPIngressRuleValue(ingressRule.HTTP).Prefix("http")...)
+	}
+	return allErrs
+}
+
+func validateHTTPIngressRuleValue(httpIngressRuleValue *experimental.HTTPIngressRuleValue) errs.ValidationErrorList {
+	allErrs := errs.ValidationErrorList{}
+	if len(httpIngressRuleValue.Paths) == 0 {
+		allErrs = append(allErrs, errs.NewFieldRequired("paths"))
+	}
+	for _, rule := range httpIngressRuleValue.Paths {
+		if len(rule.Path) > 0 {
+			if !strings.HasPrefix(rule.Path, "/") {
+				allErrs = append(allErrs, errs.NewFieldInvalid("path", rule.Path, "path must begin with /"))
+			}
+			// TODO: More draconian path regex validation.
+			// Path must be a valid regex. This is the basic requirement.
+			// In addition to this any characters not allowed in a path per
+			// RFC 3986 section-3.3 cannot appear as a literal in the regex.
+			// Consider the example: http://host/valid?#bar, everything after
+			// the last '/' is a valid regex that matches valid#bar, which
+			// isn't a valid path, because the path terminates at the first ?
+			// or #. A more sophisticated form of validation would detect that
+			// the user is confusing url regexes with path regexes.
+			_, err := regexp.CompilePOSIX(rule.Path)
+			if err != nil {
+				allErrs = append(allErrs, errs.NewFieldInvalid("path", rule.Path, "httpIngressRuleValue.path must be a valid regex."))
+			}
+		}
+		allErrs = append(allErrs, validateIngressBackend(&rule.Backend).Prefix("backend")...)
+	}
+	return allErrs
+}
+
+// validateIngressBackend tests if a given backend is valid.
+func validateIngressBackend(backend *experimental.IngressBackend) errs.ValidationErrorList {
+	allErrs := errs.ValidationErrorList{}
+
+	// All backends must reference a single local service by name, and a single service port by name or number.
+	if len(backend.ServiceName) == 0 {
+		return append(allErrs, errs.NewFieldRequired("serviceName"))
+	} else if ok, errMsg := apivalidation.ValidateServiceName(backend.ServiceName, false); !ok {
+		allErrs = append(allErrs, errs.NewFieldInvalid("serviceName", backend.ServiceName, errMsg))
+	}
+	if backend.ServicePort.Kind == util.IntstrString {
+		if !utilvalidation.IsDNS1123Label(backend.ServicePort.StrVal) {
+			allErrs = append(allErrs, errs.NewFieldInvalid("servicePort", backend.ServicePort.StrVal, apivalidation.DNS1123LabelErrorMsg))
+		}
+		if !utilvalidation.IsValidPortName(backend.ServicePort.StrVal) {
+			allErrs = append(allErrs, errs.NewFieldInvalid("servicePort", backend.ServicePort.StrVal, portNameErrorMsg))
+		}
+	} else if !utilvalidation.IsValidPortNum(backend.ServicePort.IntVal) {
+		allErrs = append(allErrs, errs.NewFieldInvalid("servicePort", backend.ServicePort, portRangeErrorMsg))
+	}
+	return allErrs
+}
+
+func validateClusterAutoscalerSpec(spec experimental.ClusterAutoscalerSpec) errs.ValidationErrorList {
+	allErrs := errs.ValidationErrorList{}
+	if spec.MinNodes < 0 {
+		allErrs = append(allErrs, errs.NewFieldInvalid("minNodes", spec.MinNodes, `must be non-negative`))
+	}
+	if spec.MaxNodes < spec.MinNodes {
+		allErrs = append(allErrs, errs.NewFieldInvalid("maxNodes", spec.MaxNodes, `must be bigger or equal to minNodes`))
+	}
+	if len(spec.TargetUtilization) == 0 {
+		allErrs = append(allErrs, errs.NewFieldRequired("targetUtilization"))
+	}
+	for _, target := range spec.TargetUtilization {
+		if len(target.Resource) == 0 {
+			allErrs = append(allErrs, errs.NewFieldRequired("targetUtilization.resource"))
+		}
+		if target.Value <= 0 {
+			allErrs = append(allErrs, errs.NewFieldInvalid("targetUtilization.value", target.Value, "must be greater than 0"))
+		}
+		if target.Value > 1 {
+			allErrs = append(allErrs, errs.NewFieldInvalid("targetUtilization.value", target.Value, "must be less or equal 1"))
+		}
+	}
+	return allErrs
+}
+
+func ValidateClusterAutoscaler(autoscaler *experimental.ClusterAutoscaler) errs.ValidationErrorList {
+	allErrs := errs.ValidationErrorList{}
+	if autoscaler.Name != "ClusterAutoscaler" {
+		allErrs = append(allErrs, errs.NewFieldInvalid("name", autoscaler.Name, `name must be ClusterAutoscaler`))
+	}
+	if autoscaler.Namespace != api.NamespaceDefault {
+		allErrs = append(allErrs, errs.NewFieldInvalid("namespace", autoscaler.Namespace, `namespace must be default`))
+	}
+	allErrs = append(allErrs, validateClusterAutoscalerSpec(autoscaler.Spec)...)
 	return allErrs
 }

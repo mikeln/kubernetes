@@ -17,6 +17,7 @@ api-servers
 api-server-port
 api-token
 api-version
+kubernetes-service-node-port
 authorization-mode
 authorization-policy-file
 auth-path
@@ -70,13 +71,13 @@ duration-sec
 e2e-verify-service-account
 e2e-output-dir
 enable-debugging-handlers
-enable-horizontal-pod-autoscaler
-enable-deployment-controller
+enable-experimental
 enable-server
 etcd-config
 etcd-prefix
 etcd-server
 etcd-servers
+etcd-servers-overrides
 event-burst
 event-qps
 event-ttl
@@ -122,6 +123,7 @@ iptables-sync-period
 ir-data-source
 ir-dbname
 ir-influxdb-host
+ir-namespace-only
 ir-password
 ir-user
 jenkins-host
@@ -175,6 +177,7 @@ mesos-executor-mem
 mesos-master
 mesos-role
 mesos-user
+mesos-launch-grace-period
 minimum-container-ttl-duration
 minion-max-log-age
 minion-max-log-backups
@@ -182,6 +185,7 @@ minion-max-log-size
 minion-path-override
 min-pr-number
 min-request-timeout
+min-resync-period
 namespace-sync-period
 network-plugin
 network-plugin-dir

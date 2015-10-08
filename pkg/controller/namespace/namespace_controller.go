@@ -55,6 +55,7 @@ func NewNamespaceController(kubeClient client.Interface, experimentalMode bool, 
 			},
 		},
 		&api.Namespace{},
+		// TODO: Can we have much longer period here?
 		resyncPeriod,
 		framework.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
@@ -206,6 +207,10 @@ func deleteAllContent(kubeClient client.Interface, experimentalMode bool, namesp
 			return estimate, err
 		}
 		err = deleteDeployments(kubeClient.Experimental(), namespace)
+		if err != nil {
+			return estimate, err
+		}
+		err = deleteIngress(kubeClient.Experimental(), namespace)
 		if err != nil {
 			return estimate, err
 		}
@@ -490,6 +495,20 @@ func deleteDeployments(expClient client.ExperimentalInterface, ns string) error 
 	}
 	for i := range items.Items {
 		err := expClient.Deployments(ns).Delete(items.Items[i].Name, nil)
+		if err != nil && !errors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func deleteIngress(expClient client.ExperimentalInterface, ns string) error {
+	items, err := expClient.Ingress(ns).List(labels.Everything(), fields.Everything())
+	if err != nil {
+		return err
+	}
+	for i := range items.Items {
+		err := expClient.Ingress(ns).Delete(items.Items[i].Name, nil)
 		if err != nil && !errors.IsNotFound(err) {
 			return err
 		}

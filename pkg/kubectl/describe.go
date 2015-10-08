@@ -1260,7 +1260,7 @@ func (d *HorizontalPodAutoscalerDescriber) Describe(namespace, name string) (str
 			hpa.Spec.Target.Resource)
 		fmt.Fprintf(out, "Current resource consumption:\t")
 
-		if hpa.Status != nil && hpa.Status.CurrentConsumption != nil {
+		if hpa.Status.CurrentConsumption != nil {
 			fmt.Fprintf(out, "%s %s\n",
 				hpa.Status.CurrentConsumption.Quantity.String(),
 				hpa.Status.CurrentConsumption.Resource)
@@ -1434,6 +1434,10 @@ func (dd *DeploymentDescriber) Describe(namespace, name string) (string, error) 
 				newRCs = append(newRCs, newRC)
 			}
 			fmt.Fprintf(out, "NewReplicationController:\t%s\n", printReplicationControllersByLabels(newRCs))
+		}
+		events, err := dd.Events(namespace).Search(d)
+		if err == nil && events != nil {
+			DescribeEvents(events, out)
 		}
 		return nil
 	})

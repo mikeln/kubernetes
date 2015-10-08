@@ -17,6 +17,7 @@ limitations under the License.
 package e2e
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,10 +33,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ghodss/yaml"
+
 	"k8s.io/kubernetes/pkg/api"
 	apierrs "k8s.io/kubernetes/pkg/api/errors"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/fields"
+	"k8s.io/kubernetes/pkg/kubectl"
 	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/util/wait"
 
@@ -60,10 +64,7 @@ const (
 	simplePodPort            = 80
 )
 
-var (
-	portForwardRegexp = regexp.MustCompile("Forwarding from 127.0.0.1:([0-9]+) -> 80")
-	proxyRegexp       = regexp.MustCompile("Starting to serve on 127.0.0.1:([0-9]+)")
-)
+var proxyRegexp = regexp.MustCompile("Starting to serve on 127.0.0.1:([0-9]+)")
 
 var _ = Describe("Kubectl client", func() {
 	defer GinkgoRecover()
@@ -200,32 +201,11 @@ var _ = Describe("Kubectl client", func() {
 
 		It("should support port-forward", func() {
 			By("forwarding the container port to a local port")
-			cmd := kubectlCmd("port-forward", fmt.Sprintf("--namespace=%v", ns), simplePodName, fmt.Sprintf(":%d", simplePodPort))
+			cmd, listenPort := runPortForward(ns, simplePodName, simplePodPort)
 			defer tryKill(cmd)
-			// This is somewhat ugly but is the only way to retrieve the port that was picked
-			// by the port-forward command. We don't want to hard code the port as we have no
-			// way of guaranteeing we can pick one that isn't in use, particularly on Jenkins.
-			Logf("starting port-forward command and streaming output")
-			stdout, stderr, err := startCmdAndStreamOutput(cmd)
-			if err != nil {
-				Failf("Failed to start port-forward command: %v", err)
-			}
-			defer stdout.Close()
-			defer stderr.Close()
 
-			buf := make([]byte, 128)
-			var n int
-			Logf("reading from `kubectl port-forward` command's stderr")
-			if n, err = stderr.Read(buf); err != nil {
-				Failf("Failed to read from kubectl port-forward stderr: %v", err)
-			}
-			portForwardOutput := string(buf[:n])
-			match := portForwardRegexp.FindStringSubmatch(portForwardOutput)
-			if len(match) != 2 {
-				Failf("Failed to parse kubectl port-forward output: %s", portForwardOutput)
-			}
 			By("curling local port output")
-			localAddr := fmt.Sprintf("http://localhost:%s", match[1])
+			localAddr := fmt.Sprintf("http://localhost:%d", listenPort)
 			body, err := curl(localAddr)
 			Logf("got: %s", body)
 			if err != nil {
@@ -247,6 +227,25 @@ var _ = Describe("Kubectl client", func() {
 			if !strings.Contains(output, "v1") {
 				Failf("No v1 in kubectl api-versions")
 			}
+		})
+	})
+
+	Describe("Kubectl apply", func() {
+		It("should apply a new configuration to an existing RC", func() {
+			mkpath := func(file string) string {
+				return filepath.Join(testContext.RepoRoot, "examples/guestbook-go", file)
+			}
+			controllerJson := mkpath("redis-master-controller.json")
+			nsFlag := fmt.Sprintf("--namespace=%v", ns)
+			By("creating Redis RC")
+			runKubectl("create", "-f", controllerJson, nsFlag)
+			By("applying a modified configuration")
+			stdin := modifyReplicationControllerConfiguration(controllerJson)
+			newKubectlCommand("apply", "-f", "-", nsFlag).
+				withStdinReader(stdin).
+				exec()
+			By("checking the result")
+			forEachReplicationController(c, ns, "app", "redis", validateReplicationControllerConfiguration)
 		})
 	})
 
@@ -812,6 +811,7 @@ func waitForGuestbookResponse(c *client.Client, cmd, arg, expectedResponse strin
 		if err == nil && res == expectedResponse {
 			return true
 		}
+		Logf("Failed to get response from guestbook. err: %v, response: %s", err, res)
 	}
 	return false
 }
@@ -833,6 +833,77 @@ func makeRequestToGuestbook(c *client.Client, cmd, value string, ns string) (str
 
 type updateDemoData struct {
 	Image string
+}
+
+const applyTestLabel = "kubectl.kubernetes.io/apply-test"
+
+func readBytesFromFile(filename string) []byte {
+	file, err := os.Open(filename)
+	if err != nil {
+		Failf(err.Error())
+	}
+
+	data, err := ioutil.ReadAll(file)
+	if err != nil {
+		Failf(err.Error())
+	}
+
+	return data
+}
+
+func readReplicationControllerFromFile(filename string) *api.ReplicationController {
+	data := readBytesFromFile(filename)
+	rc := api.ReplicationController{}
+	if err := yaml.Unmarshal(data, &rc); err != nil {
+		Failf(err.Error())
+	}
+
+	return &rc
+}
+
+func modifyReplicationControllerConfiguration(filename string) io.Reader {
+	rc := readReplicationControllerFromFile(filename)
+	rc.Labels[applyTestLabel] = "ADDED"
+	rc.Spec.Selector[applyTestLabel] = "ADDED"
+	rc.Spec.Template.Labels[applyTestLabel] = "ADDED"
+	data, err := json.Marshal(rc)
+	if err != nil {
+		Failf("json marshal failed: %s\n", err)
+	}
+
+	return bytes.NewReader(data)
+}
+
+func forEachReplicationController(c *client.Client, ns, selectorKey, selectorValue string, fn func(api.ReplicationController)) {
+	var rcs *api.ReplicationControllerList
+	var err error
+	for t := time.Now(); time.Since(t) < podListTimeout; time.Sleep(poll) {
+		rcs, err = c.ReplicationControllers(ns).List(labels.SelectorFromSet(labels.Set(map[string]string{selectorKey: selectorValue})))
+		Expect(err).NotTo(HaveOccurred())
+		if len(rcs.Items) > 0 {
+			break
+		}
+	}
+
+	if rcs == nil || len(rcs.Items) == 0 {
+		Failf("No replication controllers found")
+	}
+
+	for _, rc := range rcs.Items {
+		fn(rc)
+	}
+}
+
+func validateReplicationControllerConfiguration(rc api.ReplicationController) {
+	if rc.Name == "redis-master" {
+		if _, ok := rc.Annotations[kubectl.LastAppliedConfigAnnotation]; !ok {
+			Failf("Annotation not found in modified configuration:\n%v\n", rc)
+		}
+
+		if value, ok := rc.Labels[applyTestLabel]; !ok || value != "ADDED" {
+			Failf("Added label %s not found in modified configuration:\n%v\n", applyTestLabel, rc)
+		}
+	}
 }
 
 // getUDData creates a validator function based on the input string (i.e. kitten.jpg).

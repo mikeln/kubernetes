@@ -43,6 +43,7 @@ import (
 	"k8s.io/kubernetes/pkg/apiserver"
 	"k8s.io/kubernetes/pkg/client/record"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
+	"k8s.io/kubernetes/pkg/controller"
 	"k8s.io/kubernetes/pkg/controller/endpoint"
 	"k8s.io/kubernetes/pkg/controller/node"
 	replicationControllerPkg "k8s.io/kubernetes/pkg/controller/replication"
@@ -144,10 +145,12 @@ func startComponents(firstManifestURL, secondManifestURL string) (string, string
 	}
 	expEtcdStorage, err := master.NewEtcdStorage(etcdClient, latest.GroupOrDie("experimental").InterfacesFor, testapi.Experimental.GroupAndVersion(), etcdtest.PathPrefix())
 	storageVersions["experimental"] = testapi.Experimental.GroupAndVersion()
-
 	if err != nil {
 		glog.Fatalf("Unable to get etcd storage for experimental: %v", err)
 	}
+	storageDestinations := master.NewStorageDestinations()
+	storageDestinations.AddAPIGroup("", etcdStorage)
+	storageDestinations.AddAPIGroup("experimental", expEtcdStorage)
 
 	// Master
 	host, port, err := net.SplitHostPort(strings.TrimLeft(apiServer.URL, "http://"))
@@ -166,8 +169,7 @@ func startComponents(firstManifestURL, secondManifestURL string) (string, string
 
 	// Create a master and install handlers into mux.
 	m := master.New(&master.Config{
-		DatabaseStorage:       etcdStorage,
-		ExpDatabaseStorage:    expEtcdStorage,
+		StorageDestinations:   storageDestinations,
 		KubeletClient:         fakeKubeletClient{},
 		EnableCoreControllers: true,
 		EnableLogsSupport:     false,
@@ -195,16 +197,15 @@ func startComponents(firstManifestURL, secondManifestURL string) (string, string
 	eventBroadcaster.StartRecordingToSink(cl.Events(""))
 	scheduler.New(schedulerConfig).Run()
 
-	endpoints := endpointcontroller.NewEndpointController(cl)
 	// ensure the service endpoints are sync'd several times within the window that the integration tests wait
-	go endpoints.Run(3, util.NeverStop)
-
-	controllerManager := replicationControllerPkg.NewReplicationManager(cl, replicationControllerPkg.BurstReplicas)
+	go endpointcontroller.NewEndpointController(cl, controller.NoResyncPeriodFunc).
+		Run(3, util.NeverStop)
 
 	// TODO: Write an integration test for the replication controllers watch.
-	go controllerManager.Run(3, util.NeverStop)
+	go replicationControllerPkg.NewReplicationManager(cl, controller.NoResyncPeriodFunc, replicationControllerPkg.BurstReplicas).
+		Run(3, util.NeverStop)
 
-	nodeController := nodecontroller.NewNodeController(nil, cl, 5*time.Minute, util.NewFakeRateLimiter(),
+	nodeController := nodecontroller.NewNodeController(nil, cl, 5*time.Minute, util.NewFakeRateLimiter(), util.NewFakeRateLimiter(),
 		40*time.Second, 60*time.Second, 5*time.Second, nil, false)
 	nodeController.Run(5 * time.Second)
 	cadvisorInterface := new(cadvisor.Fake)
@@ -238,7 +239,7 @@ func startComponents(firstManifestURL, secondManifestURL string) (string, string
 		10*time.Second, /* SyncFrequency */
 		40 /* MaxPods */)
 
-	kubeletapp.RunKubelet(kcfg, nil)
+	kubeletapp.RunKubelet(kcfg)
 	// Kubelet (machine)
 	// Create a second kubelet so that the guestbook example's two redis slaves both
 	// have a place they can schedule.
@@ -270,7 +271,7 @@ func startComponents(firstManifestURL, secondManifestURL string) (string, string
 
 		40 /* MaxPods */)
 
-	kubeletapp.RunKubelet(kcfg, nil)
+	kubeletapp.RunKubelet(kcfg)
 	return apiServer.URL, configFilePath
 }
 

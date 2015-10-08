@@ -311,6 +311,11 @@ func deepCopy_v1_FCVolumeSource(in v1.FCVolumeSource, out *v1.FCVolumeSource, c 
 	return nil
 }
 
+func deepCopy_v1_FlockerVolumeSource(in v1.FlockerVolumeSource, out *v1.FlockerVolumeSource, c *conversion.Cloner) error {
+	out.DatasetName = in.DatasetName
+	return nil
+}
+
 func deepCopy_v1_GCEPersistentDiskVolumeSource(in v1.GCEPersistentDiskVolumeSource, out *v1.GCEPersistentDiskVolumeSource, c *conversion.Cloner) error {
 	out.PDName = in.PDName
 	out.FSType = in.FSType
@@ -492,6 +497,10 @@ func deepCopy_v1_PersistentVolumeClaimVolumeSource(in v1.PersistentVolumeClaimVo
 	return nil
 }
 
+func deepCopy_v1_PodSecurityContext(in v1.PodSecurityContext, out *v1.PodSecurityContext, c *conversion.Cloner) error {
+	return nil
+}
+
 func deepCopy_v1_PodSpec(in v1.PodSpec, out *v1.PodSpec, c *conversion.Cloner) error {
 	if in.Volumes != nil {
 		out.Volumes = make([]v1.Volume, len(in.Volumes))
@@ -541,6 +550,14 @@ func deepCopy_v1_PodSpec(in v1.PodSpec, out *v1.PodSpec, c *conversion.Cloner) e
 	out.HostNetwork = in.HostNetwork
 	out.HostPID = in.HostPID
 	out.HostIPC = in.HostIPC
+	if in.SecurityContext != nil {
+		out.SecurityContext = new(v1.PodSecurityContext)
+		if err := deepCopy_v1_PodSecurityContext(*in.SecurityContext, out.SecurityContext, c); err != nil {
+			return err
+		}
+	} else {
+		out.SecurityContext = nil
+	}
 	if in.ImagePullSecrets != nil {
 		out.ImagePullSecrets = make([]v1.LocalObjectReference, len(in.ImagePullSecrets))
 		for i := range in.ImagePullSecrets {
@@ -800,6 +817,14 @@ func deepCopy_v1_VolumeSource(in v1.VolumeSource, out *v1.VolumeSource, c *conve
 	} else {
 		out.CephFS = nil
 	}
+	if in.Flocker != nil {
+		out.Flocker = new(v1.FlockerVolumeSource)
+		if err := deepCopy_v1_FlockerVolumeSource(*in.Flocker, out.Flocker, c); err != nil {
+			return err
+		}
+	} else {
+		out.Flocker = nil
+	}
 	if in.DownwardAPI != nil {
 		out.DownwardAPI = new(v1.DownwardAPIVolumeSource)
 		if err := deepCopy_v1_DownwardAPIVolumeSource(*in.DownwardAPI, out.DownwardAPI, c); err != nil {
@@ -822,6 +847,55 @@ func deepCopy_v1_VolumeSource(in v1.VolumeSource, out *v1.VolumeSource, c *conve
 func deepCopy_v1alpha1_APIVersion(in APIVersion, out *APIVersion, c *conversion.Cloner) error {
 	out.Name = in.Name
 	out.APIGroup = in.APIGroup
+	return nil
+}
+
+func deepCopy_v1alpha1_ClusterAutoscaler(in ClusterAutoscaler, out *ClusterAutoscaler, c *conversion.Cloner) error {
+	if err := deepCopy_unversioned_TypeMeta(in.TypeMeta, &out.TypeMeta, c); err != nil {
+		return err
+	}
+	if err := deepCopy_v1_ObjectMeta(in.ObjectMeta, &out.ObjectMeta, c); err != nil {
+		return err
+	}
+	if err := deepCopy_v1alpha1_ClusterAutoscalerSpec(in.Spec, &out.Spec, c); err != nil {
+		return err
+	}
+	return nil
+}
+
+func deepCopy_v1alpha1_ClusterAutoscalerList(in ClusterAutoscalerList, out *ClusterAutoscalerList, c *conversion.Cloner) error {
+	if err := deepCopy_unversioned_TypeMeta(in.TypeMeta, &out.TypeMeta, c); err != nil {
+		return err
+	}
+	if err := deepCopy_unversioned_ListMeta(in.ListMeta, &out.ListMeta, c); err != nil {
+		return err
+	}
+	if in.Items != nil {
+		out.Items = make([]ClusterAutoscaler, len(in.Items))
+		for i := range in.Items {
+			if err := deepCopy_v1alpha1_ClusterAutoscaler(in.Items[i], &out.Items[i], c); err != nil {
+				return err
+			}
+		}
+	} else {
+		out.Items = nil
+	}
+	return nil
+}
+
+func deepCopy_v1alpha1_ClusterAutoscalerSpec(in ClusterAutoscalerSpec, out *ClusterAutoscalerSpec, c *conversion.Cloner) error {
+	out.MinNodes = in.MinNodes
+	out.MaxNodes = in.MaxNodes
+	if in.TargetUtilization != nil {
+		out.TargetUtilization = make([]NodeUtilization, len(in.TargetUtilization))
+		for i := range in.TargetUtilization {
+			if err := deepCopy_v1alpha1_NodeUtilization(in.TargetUtilization[i], &out.TargetUtilization[i], c); err != nil {
+				return err
+			}
+		}
+	} else {
+		out.TargetUtilization = nil
+	}
 	return nil
 }
 
@@ -978,6 +1052,28 @@ func deepCopy_v1alpha1_DeploymentStrategy(in DeploymentStrategy, out *Deployment
 	return nil
 }
 
+func deepCopy_v1alpha1_HTTPIngressPath(in HTTPIngressPath, out *HTTPIngressPath, c *conversion.Cloner) error {
+	out.Path = in.Path
+	if err := deepCopy_v1alpha1_IngressBackend(in.Backend, &out.Backend, c); err != nil {
+		return err
+	}
+	return nil
+}
+
+func deepCopy_v1alpha1_HTTPIngressRuleValue(in HTTPIngressRuleValue, out *HTTPIngressRuleValue, c *conversion.Cloner) error {
+	if in.Paths != nil {
+		out.Paths = make([]HTTPIngressPath, len(in.Paths))
+		for i := range in.Paths {
+			if err := deepCopy_v1alpha1_HTTPIngressPath(in.Paths[i], &out.Paths[i], c); err != nil {
+				return err
+			}
+		}
+	} else {
+		out.Paths = nil
+	}
+	return nil
+}
+
 func deepCopy_v1alpha1_HorizontalPodAutoscaler(in HorizontalPodAutoscaler, out *HorizontalPodAutoscaler, c *conversion.Cloner) error {
 	if err := deepCopy_unversioned_TypeMeta(in.TypeMeta, &out.TypeMeta, c); err != nil {
 		return err
@@ -988,13 +1084,8 @@ func deepCopy_v1alpha1_HorizontalPodAutoscaler(in HorizontalPodAutoscaler, out *
 	if err := deepCopy_v1alpha1_HorizontalPodAutoscalerSpec(in.Spec, &out.Spec, c); err != nil {
 		return err
 	}
-	if in.Status != nil {
-		out.Status = new(HorizontalPodAutoscalerStatus)
-		if err := deepCopy_v1alpha1_HorizontalPodAutoscalerStatus(*in.Status, out.Status, c); err != nil {
-			return err
-		}
-	} else {
-		out.Status = nil
+	if err := deepCopy_v1alpha1_HorizontalPodAutoscalerStatus(in.Status, &out.Status, c); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1075,13 +1166,10 @@ func deepCopy_v1alpha1_Ingress(in Ingress, out *Ingress, c *conversion.Cloner) e
 }
 
 func deepCopy_v1alpha1_IngressBackend(in IngressBackend, out *IngressBackend, c *conversion.Cloner) error {
-	if err := deepCopy_v1_LocalObjectReference(in.ServiceRef, &out.ServiceRef, c); err != nil {
-		return err
-	}
+	out.ServiceName = in.ServiceName
 	if err := deepCopy_util_IntOrString(in.ServicePort, &out.ServicePort, c); err != nil {
 		return err
 	}
-	out.Protocol = in.Protocol
 	return nil
 }
 
@@ -1105,30 +1193,35 @@ func deepCopy_v1alpha1_IngressList(in IngressList, out *IngressList, c *conversi
 	return nil
 }
 
-func deepCopy_v1alpha1_IngressPath(in IngressPath, out *IngressPath, c *conversion.Cloner) error {
-	out.Path = in.Path
-	if err := deepCopy_v1alpha1_IngressBackend(in.Backend, &out.Backend, c); err != nil {
+func deepCopy_v1alpha1_IngressRule(in IngressRule, out *IngressRule, c *conversion.Cloner) error {
+	out.Host = in.Host
+	if err := deepCopy_v1alpha1_IngressRuleValue(in.IngressRuleValue, &out.IngressRuleValue, c); err != nil {
 		return err
 	}
 	return nil
 }
 
-func deepCopy_v1alpha1_IngressRule(in IngressRule, out *IngressRule, c *conversion.Cloner) error {
-	out.Host = in.Host
-	if in.Paths != nil {
-		out.Paths = make([]IngressPath, len(in.Paths))
-		for i := range in.Paths {
-			if err := deepCopy_v1alpha1_IngressPath(in.Paths[i], &out.Paths[i], c); err != nil {
-				return err
-			}
+func deepCopy_v1alpha1_IngressRuleValue(in IngressRuleValue, out *IngressRuleValue, c *conversion.Cloner) error {
+	if in.HTTP != nil {
+		out.HTTP = new(HTTPIngressRuleValue)
+		if err := deepCopy_v1alpha1_HTTPIngressRuleValue(*in.HTTP, out.HTTP, c); err != nil {
+			return err
 		}
 	} else {
-		out.Paths = nil
+		out.HTTP = nil
 	}
 	return nil
 }
 
 func deepCopy_v1alpha1_IngressSpec(in IngressSpec, out *IngressSpec, c *conversion.Cloner) error {
+	if in.Backend != nil {
+		out.Backend = new(IngressBackend)
+		if err := deepCopy_v1alpha1_IngressBackend(*in.Backend, out.Backend, c); err != nil {
+			return err
+		}
+	} else {
+		out.Backend = nil
+	}
 	if in.Rules != nil {
 		out.Rules = make([]IngressRule, len(in.Rules))
 		for i := range in.Rules {
@@ -1261,6 +1354,12 @@ func deepCopy_v1alpha1_JobStatus(in JobStatus, out *JobStatus, c *conversion.Clo
 	out.Active = in.Active
 	out.Successful = in.Successful
 	out.Unsuccessful = in.Unsuccessful
+	return nil
+}
+
+func deepCopy_v1alpha1_NodeUtilization(in NodeUtilization, out *NodeUtilization, c *conversion.Cloner) error {
+	out.Resource = in.Resource
+	out.Value = in.Value
 	return nil
 }
 
@@ -1448,6 +1547,7 @@ func init() {
 		deepCopy_v1_EnvVarSource,
 		deepCopy_v1_ExecAction,
 		deepCopy_v1_FCVolumeSource,
+		deepCopy_v1_FlockerVolumeSource,
 		deepCopy_v1_GCEPersistentDiskVolumeSource,
 		deepCopy_v1_GitRepoVolumeSource,
 		deepCopy_v1_GlusterfsVolumeSource,
@@ -1463,6 +1563,7 @@ func init() {
 		deepCopy_v1_ObjectFieldSelector,
 		deepCopy_v1_ObjectMeta,
 		deepCopy_v1_PersistentVolumeClaimVolumeSource,
+		deepCopy_v1_PodSecurityContext,
 		deepCopy_v1_PodSpec,
 		deepCopy_v1_PodTemplateSpec,
 		deepCopy_v1_Probe,
@@ -1476,6 +1577,9 @@ func init() {
 		deepCopy_v1_VolumeMount,
 		deepCopy_v1_VolumeSource,
 		deepCopy_v1alpha1_APIVersion,
+		deepCopy_v1alpha1_ClusterAutoscaler,
+		deepCopy_v1alpha1_ClusterAutoscalerList,
+		deepCopy_v1alpha1_ClusterAutoscalerSpec,
 		deepCopy_v1alpha1_DaemonSet,
 		deepCopy_v1alpha1_DaemonSetList,
 		deepCopy_v1alpha1_DaemonSetSpec,
@@ -1485,6 +1589,8 @@ func init() {
 		deepCopy_v1alpha1_DeploymentSpec,
 		deepCopy_v1alpha1_DeploymentStatus,
 		deepCopy_v1alpha1_DeploymentStrategy,
+		deepCopy_v1alpha1_HTTPIngressPath,
+		deepCopy_v1alpha1_HTTPIngressRuleValue,
 		deepCopy_v1alpha1_HorizontalPodAutoscaler,
 		deepCopy_v1alpha1_HorizontalPodAutoscalerList,
 		deepCopy_v1alpha1_HorizontalPodAutoscalerSpec,
@@ -1492,8 +1598,8 @@ func init() {
 		deepCopy_v1alpha1_Ingress,
 		deepCopy_v1alpha1_IngressBackend,
 		deepCopy_v1alpha1_IngressList,
-		deepCopy_v1alpha1_IngressPath,
 		deepCopy_v1alpha1_IngressRule,
+		deepCopy_v1alpha1_IngressRuleValue,
 		deepCopy_v1alpha1_IngressSpec,
 		deepCopy_v1alpha1_IngressStatus,
 		deepCopy_v1alpha1_Job,
@@ -1501,6 +1607,7 @@ func init() {
 		deepCopy_v1alpha1_JobList,
 		deepCopy_v1alpha1_JobSpec,
 		deepCopy_v1alpha1_JobStatus,
+		deepCopy_v1alpha1_NodeUtilization,
 		deepCopy_v1alpha1_ReplicationControllerDummy,
 		deepCopy_v1alpha1_ResourceConsumption,
 		deepCopy_v1alpha1_RollingUpdateDeployment,

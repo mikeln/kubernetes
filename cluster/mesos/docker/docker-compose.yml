@@ -47,7 +47,7 @@ mesosslave:
   - MESOS_PORT=5051
   - MESOS_LOG_DIR=/var/log/mesos
   - MESOS_LOGGING_LEVEL=INFO
-  - MESOS_RESOURCES=cpus:4;mem:1280;disk:25600;ports:[21000-21099]
+  - MESOS_RESOURCES=cpus:4;mem:1280;disk:25600;ports:[8000-21099]
   - MESOS_SWITCH_USER=0
   - MESOS_CONTAINERIZERS=docker,mesos
   - DOCKER_DAEMON_ARGS
@@ -74,7 +74,7 @@ apiserver:
     --external-hostname=apiserver
     --etcd-servers=http://etcd:4001
     --port=8888
-    --admission-control=NamespaceLifecycle,LimitRanger,SecurityContextDeny,ServiceAccount,DenyEscalatingExec,ResourceQuota
+    --admission-control=NamespaceLifecycle,LimitRanger,SecurityContextDeny,ServiceAccount,ResourceQuota
     --authorization-mode=AlwaysAllow
     --token-auth-file=/var/run/kubernetes/auth/token-users
     --basic-auth-file=/var/run/kubernetes/auth/basic-users
@@ -85,6 +85,7 @@ apiserver:
     --cloud-config=/opt/mesos-cloud.conf
     --tls-cert-file=/var/run/kubernetes/auth/apiserver.crt
     --tls-private-key-file=/var/run/kubernetes/auth/apiserver.key
+    --runtime-config=experimental/v1alpha1
     --v=4
   ports: [ "8888:8888", "6443:6443" ]
   environment:

@@ -26,6 +26,7 @@ import (
 	"k8s.io/kubernetes/pkg/api/latest"
 	"k8s.io/kubernetes/pkg/api/meta"
 	"k8s.io/kubernetes/pkg/api/unversioned"
+	apiutil "k8s.io/kubernetes/pkg/api/util"
 	"k8s.io/kubernetes/pkg/apis/experimental"
 	"k8s.io/kubernetes/pkg/runtime"
 )
@@ -48,12 +49,12 @@ func (t *thirdPartyResourceDataMapper) GroupForResource(resource string) (string
 	return t.mapper.GroupForResource(resource)
 }
 
-func (t *thirdPartyResourceDataMapper) RESTMapping(kind string, versions ...string) (*meta.RESTMapping, error) {
-	if len(versions) != 1 {
-		return nil, fmt.Errorf("unexpected set of versions: %v", versions)
+func (t *thirdPartyResourceDataMapper) RESTMapping(kind string, groupVersions ...string) (*meta.RESTMapping, error) {
+	if len(groupVersions) != 1 {
+		return nil, fmt.Errorf("unexpected set of groupVersions: %v", groupVersions)
 	}
-	if versions[0] != t.version {
-		return nil, fmt.Errorf("unknown version %s expected %s", versions[0], t.version)
+	if groupVersions[0] != apiutil.GetGroupVersion(t.group, t.version) {
+		return nil, fmt.Errorf("unknown version %s expected %s", groupVersions[0], apiutil.GetGroupVersion(t.group, t.version))
 	}
 	if kind != "ThirdPartyResourceData" {
 		return nil, fmt.Errorf("unknown kind %s expected %s", kind, t.kind)
@@ -79,6 +80,11 @@ func (t *thirdPartyResourceDataMapper) VersionAndKindForResource(resource string
 		return t.version, t.kind, nil
 	}
 	return t.mapper.VersionAndKindForResource(resource)
+}
+
+// ResourceIsValid takes a string (kind) and checks if it's a valid resource
+func (t *thirdPartyResourceDataMapper) ResourceIsValid(resource string) bool {
+	return t.isThirdPartyResource(resource) || t.mapper.ResourceIsValid(resource)
 }
 
 func NewMapper(mapper meta.RESTMapper, kind, version, group string) meta.RESTMapper {
@@ -266,28 +272,29 @@ func (t *thirdPartyResourceDataCodec) EncodeToStream(obj runtime.Object, stream 
 	}
 }
 
-func NewObjectCreator(version string, delegate runtime.ObjectCreater) runtime.ObjectCreater {
-	return &thirdPartyResourceDataCreator{version, delegate}
+func NewObjectCreator(group, version string, delegate runtime.ObjectCreater) runtime.ObjectCreater {
+	return &thirdPartyResourceDataCreator{group, version, delegate}
 }
 
 type thirdPartyResourceDataCreator struct {
+	group    string
 	version  string
 	delegate runtime.ObjectCreater
 }
 
-func (t *thirdPartyResourceDataCreator) New(version, kind string) (out runtime.Object, err error) {
+func (t *thirdPartyResourceDataCreator) New(groupVersion, kind string) (out runtime.Object, err error) {
 	switch kind {
 	case "ThirdPartyResourceData":
-		if t.version != version {
-			return nil, fmt.Errorf("unknown version %s for kind %s", version, kind)
+		if apiutil.GetGroupVersion(t.group, t.version) != groupVersion {
+			return nil, fmt.Errorf("unknown version %s for kind %s", groupVersion, kind)
 		}
 		return &experimental.ThirdPartyResourceData{}, nil
 	case "ThirdPartyResourceDataList":
-		if t.version != version {
-			return nil, fmt.Errorf("unknown version %s for kind %s", version, kind)
+		if apiutil.GetGroupVersion(t.group, t.version) != groupVersion {
+			return nil, fmt.Errorf("unknown version %s for kind %s", groupVersion, kind)
 		}
 		return &experimental.ThirdPartyResourceDataList{}, nil
 	default:
-		return t.delegate.New(version, kind)
+		return t.delegate.New(groupVersion, kind)
 	}
 }

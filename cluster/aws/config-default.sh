@@ -87,7 +87,7 @@ DNS_REPLICAS=1
 ENABLE_CLUSTER_UI="${KUBE_ENABLE_CLUSTER_UI:-true}"
 
 # Admission Controllers to invoke prior to persisting objects in cluster
-ADMISSION_CONTROL=NamespaceLifecycle,LimitRanger,SecurityContextDeny,ServiceAccount,DenyEscalatingExec,ResourceQuota
+ADMISSION_CONTROL=NamespaceLifecycle,LimitRanger,SecurityContextDeny,ServiceAccount,ResourceQuota
 
 # Optional: Enable/disable public IP assignment for minions.
 # Important Note: disable only if you have setup a NAT instance for internet access and configured appropriate routes!
@@ -99,3 +99,9 @@ KUBE_MINION_IMAGE="${KUBE_MINION_IMAGE:-}"
 COREOS_CHANNEL="${COREOS_CHANNEL:-alpha}"
 CONTAINER_RUNTIME="${KUBE_CONTAINER_RUNTIME:-docker}"
 RKT_VERSION="${KUBE_RKT_VERSION:-0.5.5}"
+
+# OpenContrail networking plugin specific settings
+NETWORK_PROVIDER="${NETWORK_PROVIDER:-none}" # opencontrail
+OPENCONTRAIL_TAG="${OPENCONTRAIL_TAG:-R2.20}"
+OPENCONTRAIL_KUBERNETES_TAG="${OPENCONTRAIL_KUBERNETES_TAG:-master}"
+OPENCONTRAIL_PUBLIC_SUBNET="${OPENCONTRAIL_PUBLIC_SUBNET:-10.1.0.0/16}"

@@ -68,7 +68,7 @@ type JobController struct {
 	queue *workqueue.Type
 }
 
-func NewJobController(kubeClient client.Interface) *JobController {
+func NewJobController(kubeClient client.Interface, resyncPeriod controller.ResyncPeriodFunc) *JobController {
 	eventBroadcaster := record.NewBroadcaster()
 	eventBroadcaster.StartLogging(glog.Infof)
 	eventBroadcaster.StartRecordingToSink(kubeClient.Events(""))
@@ -93,17 +93,14 @@ func NewJobController(kubeClient client.Interface) *JobController {
 			},
 		},
 		&experimental.Job{},
+		// TODO: Can we have much longer period here?
 		replicationcontroller.FullControllerResyncPeriod,
 		framework.ResourceEventHandlerFuncs{
 			AddFunc: jm.enqueueController,
 			UpdateFunc: func(old, cur interface{}) {
-				job := cur.(*experimental.Job)
-				for _, c := range job.Status.Conditions {
-					if c.Type == experimental.JobComplete && c.Status == api.ConditionTrue {
-						return
-					}
+				if job := cur.(*experimental.Job); !isJobFinished(job) {
+					jm.enqueueController(job)
 				}
-				jm.enqueueController(cur)
 			},
 			DeleteFunc: jm.enqueueController,
 		},
@@ -119,7 +116,7 @@ func NewJobController(kubeClient client.Interface) *JobController {
 			},
 		},
 		&api.Pod{},
-		replicationcontroller.PodRelistPeriod,
+		resyncPeriod(),
 		framework.ResourceEventHandlerFuncs{
 			AddFunc:    jm.addPod,
 			UpdateFunc: jm.updatePod,
@@ -447,6 +444,15 @@ func filterPods(pods []api.Pod, phase api.PodPhase) int {
 		}
 	}
 	return result
+}
+
+func isJobFinished(j *experimental.Job) bool {
+	for _, c := range j.Status.Conditions {
+		if c.Type == experimental.JobComplete && c.Status == api.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }
 
 // byCreationTimestamp sorts a list by creation timestamp, using their names as a tie breaker.

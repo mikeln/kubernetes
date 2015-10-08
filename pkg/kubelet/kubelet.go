@@ -52,11 +52,13 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/envvars"
 	"k8s.io/kubernetes/pkg/kubelet/metrics"
 	"k8s.io/kubernetes/pkg/kubelet/network"
+	"k8s.io/kubernetes/pkg/kubelet/prober"
 	"k8s.io/kubernetes/pkg/kubelet/rkt"
 	"k8s.io/kubernetes/pkg/kubelet/status"
 	kubeletTypes "k8s.io/kubernetes/pkg/kubelet/types"
 	kubeletUtil "k8s.io/kubernetes/pkg/kubelet/util"
 	"k8s.io/kubernetes/pkg/labels"
+	"k8s.io/kubernetes/pkg/probe"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/types"
 	"k8s.io/kubernetes/pkg/util"
@@ -178,7 +180,8 @@ func NewMainKubelet(
 	dockerExecHandler dockertools.ExecHandler,
 	resolverConfig string,
 	cpuCFSQuota bool,
-	daemonEndpoints *api.NodeDaemonEndpoints) (*Kubelet, error) {
+	daemonEndpoints *api.NodeDaemonEndpoints,
+	oomAdjuster *oom.OOMAdjuster) (*Kubelet, error) {
 	if rootDirectory == "" {
 		return nil, fmt.Errorf("invalid root directory %q", rootDirectory)
 	}
@@ -243,7 +246,6 @@ func NewMainKubelet(
 		return nil, fmt.Errorf("failed to initialize disk manager: %v", err)
 	}
 	statusManager := status.NewManager(kubeClient)
-	readinessManager := kubecontainer.NewReadinessManager()
 	containerRefManager := kubecontainer.NewRefManager()
 
 	volumeManager := newVolumeManager()
@@ -258,7 +260,6 @@ func NewMainKubelet(
 		rootDirectory:                  rootDirectory,
 		resyncInterval:                 resyncInterval,
 		containerRefManager:            containerRefManager,
-		readinessManager:               readinessManager,
 		httpClient:                     &http.Client{},
 		sourcesReady:                   sourcesReady,
 		registerNode:                   registerNode,
@@ -307,9 +308,8 @@ func NewMainKubelet(
 		return nil, err
 	}
 
-	oomAdjuster := oom.NewOOMAdjuster()
 	procFs := procfs.NewProcFs()
-
+	imageBackOff := util.NewBackOff(resyncInterval, maxContainerBackOff)
 	// Initialize the runtime.
 	switch containerRuntime {
 	case "docker":
@@ -317,7 +317,7 @@ func NewMainKubelet(
 		klet.containerRuntime = dockertools.NewDockerManager(
 			dockerClient,
 			recorder,
-			readinessManager,
+			klet, // prober
 			containerRefManager,
 			machineInfo,
 			podInfraContainerImage,
@@ -331,7 +331,9 @@ func NewMainKubelet(
 			dockerExecHandler,
 			oomAdjuster,
 			procFs,
-			klet.cpuCFSQuota)
+			klet.cpuCFSQuota,
+			imageBackOff)
+
 	case "rkt":
 		conf := &rkt.Config{
 			Path:               rktPath,
@@ -343,12 +345,15 @@ func NewMainKubelet(
 			klet,
 			recorder,
 			containerRefManager,
-			readinessManager,
-			klet.volumeManager)
+			klet, // prober
+			klet.volumeManager,
+			imageBackOff)
 		if err != nil {
 			return nil, err
 		}
 		klet.containerRuntime = rktRuntime
+		klet.containerGC = rktRuntime
+		klet.imageManager = rkt.NewImageManager(rktRuntime)
 
 		// No Docker daemon to put in a container.
 		dockerDaemonContainer = ""
@@ -385,6 +390,12 @@ func NewMainKubelet(
 
 	klet.runner = klet.containerRuntime
 	klet.podManager = newBasicPodManager(klet.kubeClient)
+
+	klet.prober = prober.New(klet.runner, containerRefManager, recorder)
+	klet.probeManager = prober.NewManager(
+		klet.resyncInterval,
+		klet.statusManager,
+		klet.prober)
 
 	runtimeCache, err := kubecontainer.NewRuntimeCache(klet.containerRuntime)
 	if err != nil {
@@ -486,8 +497,10 @@ type Kubelet struct {
 	// Network plugin.
 	networkPlugin network.NetworkPlugin
 
-	// Container readiness state manager.
-	readinessManager *kubecontainer.ReadinessManager
+	// Handles container readiness probing
+	probeManager prober.Manager
+	// TODO: Move prober ownership to the probeManager once the runtime no longer depends on it.
+	prober prober.Prober
 
 	// How long to keep idle streaming command execution/port forwarding
 	// connections open before terminating them
@@ -1304,9 +1317,6 @@ func (kl *Kubelet) syncPod(pod *api.Pod, mirrorPod *api.Pod, runningPod kubecont
 	// status. Any race conditions here effectively boils down to -- the pod worker didn't sync
 	// state of a newly started container with the apiserver before the kubelet restarted, so
 	// it's OK to pretend like the kubelet started them after it restarted.
-	//
-	// Also note that deletes currently have an updateType of `create` set in UpdatePods.
-	// This, again, does not matter because deletes are not processed by this method.
 
 	var podStatus api.PodStatus
 	if updateType == SyncPodCreate {
@@ -1345,7 +1355,7 @@ func (kl *Kubelet) syncPod(pod *api.Pod, mirrorPod *api.Pod, runningPod kubecont
 		return err
 	}
 	if egress != nil || ingress != nil {
-		if pod.Spec.HostNetwork {
+		if podUsesHostNetwork(pod) {
 			kl.recorder.Event(pod, "HostNetworkNotSupported", "Bandwidth shaping is not currently supported on the host network")
 		} else if kl.shaper != nil {
 			status, found := kl.statusManager.GetPodStatus(pod.UID)
@@ -1382,6 +1392,10 @@ func (kl *Kubelet) syncPod(pod *api.Pod, mirrorPod *api.Pod, runningPod kubecont
 		}
 	}
 	return nil
+}
+
+func podUsesHostNetwork(pod *api.Pod) bool {
+	return pod.Spec.SecurityContext != nil && pod.Spec.SecurityContext.HostNetwork
 }
 
 // getPullSecretsForPod inspects the Pod and retrieves the referenced pull secrets
@@ -1665,6 +1679,7 @@ func (kl *Kubelet) HandlePodCleanups() error {
 	// Stop the workers for no-longer existing pods.
 	// TODO: is here the best place to forget pod workers?
 	kl.podWorkers.ForgetNonExistingPodWorkers(desiredPods)
+	kl.probeManager.CleanupPods(activePods)
 
 	runningPods, err := kl.runtimeCache.GetPods()
 	if err != nil {
@@ -1952,7 +1967,7 @@ func (kl *Kubelet) dispatchWork(pod *api.Pod, syncType SyncPodType, mirrorPod *a
 		return
 	}
 	// Run the sync in an async worker.
-	kl.podWorkers.UpdatePod(pod, mirrorPod, func() {
+	kl.podWorkers.UpdatePod(pod, mirrorPod, syncType, func() {
 		metrics.PodWorkerLatency.WithLabelValues(syncType.String()).Observe(metrics.SinceInMicroseconds(start))
 	})
 	// Note the number of containers for new pods.
@@ -1993,6 +2008,7 @@ func (kl *Kubelet) HandlePodAdditions(pods []*api.Pod) {
 		}
 		mirrorPod, _ := kl.podManager.GetMirrorPodByPod(pod)
 		kl.dispatchWork(pod, SyncPodCreate, mirrorPod, start)
+		kl.probeManager.AddPod(pod)
 	}
 }
 
@@ -2024,6 +2040,7 @@ func (kl *Kubelet) HandlePodDeletions(pods []*api.Pod) {
 		if err := kl.deletePod(pod.UID); err != nil {
 			glog.V(2).Infof("Failed to delete pod %q, err: %v", kubeletUtil.FormatPodName(pod), err)
 		}
+		kl.probeManager.RemovePod(pod)
 	}
 }
 
@@ -2059,25 +2076,25 @@ func (kl *Kubelet) validatePodPhase(podStatus *api.PodStatus) error {
 	return fmt.Errorf("pod is not in 'Running', 'Succeeded' or 'Failed' state - State: %q", podStatus.Phase)
 }
 
-func (kl *Kubelet) validateContainerStatus(podStatus *api.PodStatus, containerName string, previous bool) (containerID string, err error) {
+func (kl *Kubelet) validateContainerStatus(podStatus *api.PodStatus, containerName string, previous bool) (containerID kubecontainer.ContainerID, err error) {
 	var cID string
 
 	cStatus, found := api.GetContainerStatus(podStatus.ContainerStatuses, containerName)
 	if !found {
-		return "", fmt.Errorf("container %q not found", containerName)
+		return kubecontainer.ContainerID{}, fmt.Errorf("container %q not found", containerName)
 	}
 	if previous {
 		if cStatus.LastTerminationState.Terminated == nil {
-			return "", fmt.Errorf("previous terminated container %q not found", containerName)
+			return kubecontainer.ContainerID{}, fmt.Errorf("previous terminated container %q not found", containerName)
 		}
 		cID = cStatus.LastTerminationState.Terminated.ContainerID
 	} else {
 		if cStatus.State.Waiting != nil {
-			return "", fmt.Errorf("container %q is in waiting state.", containerName)
+			return kubecontainer.ContainerID{}, fmt.Errorf("container %q is in waiting state.", containerName)
 		}
 		cID = cStatus.ContainerID
 	}
-	return kubecontainer.TrimRuntimePrefix(cID), nil
+	return kubecontainer.ParseContainerID(cID), nil
 }
 
 // GetKubeletContainerLogs returns logs from the container
@@ -2362,13 +2379,12 @@ func (kl *Kubelet) setNodeStatus(node *api.Node) error {
 			LastHeartbeatTime: currentTime,
 		}
 	} else {
-		var reasons []string
 		var messages []string
 		if !containerRuntimeUp {
 			messages = append(messages, "container runtime is down")
 		}
 		if !networkConfigured {
-			messages = append(reasons, "network not configured correctly")
+			messages = append(messages, "network not configured correctly")
 		}
 		newNodeReadyCondition = api.NodeCondition{
 			Type:              api.NodeReady,
@@ -2613,15 +2629,8 @@ func (kl *Kubelet) generatePodStatus(pod *api.Pod) (api.PodStatus, error) {
 
 	// Assume info is ready to process
 	podStatus.Phase = GetPhase(spec, podStatus.ContainerStatuses)
-	for _, c := range spec.Containers {
-		for i, st := range podStatus.ContainerStatuses {
-			if st.Name == c.Name {
-				ready := st.State.Running != nil && kl.readinessManager.GetReadiness(kubecontainer.TrimRuntimePrefix(st.ContainerID))
-				podStatus.ContainerStatuses[i].Ready = ready
-				break
-			}
-		}
-	}
+	kl.probeManager.UpdatePodStatus(pod.UID, podStatus)
+
 	podStatus.Conditions = append(podStatus.Conditions, getPodReadyCondition(spec, podStatus.ContainerStatuses)...)
 
 	if !kl.standaloneMode {
@@ -2630,7 +2639,7 @@ func (kl *Kubelet) generatePodStatus(pod *api.Pod) (api.PodStatus, error) {
 			glog.V(4).Infof("Cannot get host IP: %v", err)
 		} else {
 			podStatus.HostIP = hostIP.String()
-			if pod.Spec.HostNetwork && podStatus.PodIP == "" {
+			if podUsesHostNetwork(pod) && podStatus.PodIP == "" {
 				podStatus.PodIP = hostIP.String()
 			}
 		}
@@ -2667,7 +2676,7 @@ func (kl *Kubelet) RunInContainer(podFullName string, podUID types.UID, containe
 	if container == nil {
 		return nil, fmt.Errorf("container not found (%q)", containerName)
 	}
-	return kl.runner.RunInContainer(string(container.ID), cmd)
+	return kl.runner.RunInContainer(container.ID, cmd)
 }
 
 // ExecInContainer executes a command in a container, connecting the supplied
@@ -2682,7 +2691,7 @@ func (kl *Kubelet) ExecInContainer(podFullName string, podUID types.UID, contain
 	if container == nil {
 		return fmt.Errorf("container not found (%q)", containerName)
 	}
-	return kl.runner.ExecInContainer(string(container.ID), cmd, stdin, stdout, stderr, tty)
+	return kl.runner.ExecInContainer(container.ID, cmd, stdin, stdout, stderr, tty)
 }
 
 func (kl *Kubelet) AttachContainer(podFullName string, podUID types.UID, containerName string, stdin io.Reader, stdout, stderr io.WriteCloser, tty bool) error {
@@ -2695,7 +2704,7 @@ func (kl *Kubelet) AttachContainer(podFullName string, podUID types.UID, contain
 	if container == nil {
 		return fmt.Errorf("container not found (%q)", containerName)
 	}
-	return kl.containerRuntime.AttachContainer(string(container.ID), stdin, stdout, stderr, tty)
+	return kl.containerRuntime.AttachContainer(container.ID, stdin, stdout, stderr, tty)
 }
 
 // PortForward connects to the pod's port and copies data between the port
@@ -2743,7 +2752,7 @@ func (kl *Kubelet) GetContainerInfo(podFullName string, podUID types.UID, contai
 		return nil, ErrContainerNotFound
 	}
 
-	ci, err := kl.cadvisor.DockerContainer(string(container.ID), req)
+	ci, err := kl.cadvisor.DockerContainer(container.ID.ID, req)
 	if err != nil {
 		return nil, err
 	}
@@ -2789,6 +2798,16 @@ func (kl *Kubelet) ListenAndServeReadOnly(address net.IP, port uint) {
 // is exported to simplify integration with third party kubelet extensions (e.g. kubernetes-mesos).
 func (kl *Kubelet) GetRuntime() kubecontainer.Runtime {
 	return kl.containerRuntime
+}
+
+// Proxy prober calls through the Kubelet to break the circular dependency between the runtime &
+// prober.
+// TODO: Remove this hack once the runtime no longer depends on the prober.
+func (kl *Kubelet) ProbeLiveness(pod *api.Pod, status api.PodStatus, container api.Container, containerID kubecontainer.ContainerID, createdAt int64) (probe.Result, error) {
+	return kl.prober.ProbeLiveness(pod, status, container, containerID, createdAt)
+}
+func (kl *Kubelet) ProbeReadiness(pod *api.Pod, status api.PodStatus, container api.Container, containerID kubecontainer.ContainerID) (probe.Result, error) {
+	return kl.prober.ProbeReadiness(pod, status, container, containerID)
 }
 
 var minRsrc = resource.MustParse("1k")

@@ -21,8 +21,10 @@ import (
 	"math"
 	"time"
 
+	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/apis/experimental"
+	"k8s.io/kubernetes/pkg/client/record"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/fields"
 	"k8s.io/kubernetes/pkg/labels"
@@ -31,35 +33,44 @@ import (
 )
 
 type DeploymentController struct {
-	client    client.Interface
-	expClient client.ExperimentalInterface
+	client        client.Interface
+	expClient     client.ExperimentalInterface
+	eventRecorder record.EventRecorder
 }
 
 func New(client client.Interface) *DeploymentController {
+	eventBroadcaster := record.NewBroadcaster()
+	eventBroadcaster.StartLogging(glog.Infof)
+	eventBroadcaster.StartRecordingToSink(client.Events(""))
+
 	return &DeploymentController{
-		client:    client,
-		expClient: client.Experimental(),
+		client:        client,
+		expClient:     client.Experimental(),
+		eventRecorder: eventBroadcaster.NewRecorder(api.EventSource{Component: "deployment-controller"}),
 	}
 }
 
 func (d *DeploymentController) Run(syncPeriod time.Duration) {
 	go util.Until(func() {
-		if err := d.reconcileDeployments(); err != nil {
+		errs := d.reconcileDeployments()
+		for _, err := range errs {
+			glog.Errorf("Failed to reconcile: %v", err)
 		}
 	}, syncPeriod, util.NeverStop)
 }
 
-func (d *DeploymentController) reconcileDeployments() error {
+func (d *DeploymentController) reconcileDeployments() []error {
 	list, err := d.expClient.Deployments(api.NamespaceAll).List(labels.Everything(), fields.Everything())
 	if err != nil {
-		return fmt.Errorf("error listing deployments: %v", err)
+		return []error{fmt.Errorf("error listing deployments: %v", err)}
 	}
+	errs := []error{}
 	for _, deployment := range list.Items {
 		if err := d.reconcileDeployment(&deployment); err != nil {
-			return fmt.Errorf("error in reconciling deployment: %v", err)
+			errs = append(errs, fmt.Errorf("error in reconciling deployment %s: %v", deployment.Name, err))
 		}
 	}
-	return nil
+	return errs
 }
 
 func (d *DeploymentController) reconcileDeployment(deployment *experimental.Deployment) error {
@@ -69,7 +80,7 @@ func (d *DeploymentController) reconcileDeployment(deployment *experimental.Depl
 	case experimental.RollingUpdateDeploymentStrategyType:
 		return d.reconcileRollingUpdateDeployment(*deployment)
 	}
-	return fmt.Errorf("Unexpected deployment strategy type: %s", deployment.Spec.Strategy.Type)
+	return fmt.Errorf("unexpected deployment strategy type: %s", deployment.Spec.Strategy.Type)
 }
 
 func (d *DeploymentController) reconcileRecreateDeployment(deployment experimental.Deployment) error {
@@ -88,12 +99,10 @@ func (d *DeploymentController) reconcileRollingUpdateDeployment(deployment exper
 		return err
 	}
 
-	allRCs := []*api.ReplicationController{}
-	allRCs = append(allRCs, oldRCs...)
-	allRCs = append(allRCs, newRC)
+	allRCs := append(oldRCs, newRC)
 
 	// Scale up, if we can.
-	scaledUp, err := d.scaleUp(allRCs, newRC, deployment)
+	scaledUp, err := d.reconcileNewRC(allRCs, newRC, deployment)
 	if err != nil {
 		return err
 	}
@@ -103,7 +112,7 @@ func (d *DeploymentController) reconcileRollingUpdateDeployment(deployment exper
 	}
 
 	// Scale down, if we can.
-	scaledDown, err := d.scaleDown(allRCs, oldRCs, newRC, deployment)
+	scaledDown, err := d.reconcileOldRCs(allRCs, oldRCs, newRC, deployment)
 	if err != nil {
 		return err
 	}
@@ -149,45 +158,26 @@ func (d *DeploymentController) getNewRC(deployment experimental.Deployment) (*ap
 	return createdRC, nil
 }
 
-func (d *DeploymentController) getPodsForRCs(replicationControllers []*api.ReplicationController) ([]api.Pod, error) {
-	allPods := []api.Pod{}
-	for _, rc := range replicationControllers {
-		podList, err := d.client.Pods(rc.ObjectMeta.Namespace).List(labels.SelectorFromSet(rc.Spec.Selector), fields.Everything())
-		if err != nil {
-			return allPods, fmt.Errorf("error listing pods: %v", err)
-		}
-		allPods = append(allPods, podList.Items...)
-	}
-	return allPods, nil
-}
-
-func (d *DeploymentController) getReplicaCountForRCs(replicationControllers []*api.ReplicationController) int {
-	totalReplicaCount := 0
-	for _, rc := range replicationControllers {
-		totalReplicaCount += rc.Spec.Replicas
-	}
-	return totalReplicaCount
-}
-
-func (d *DeploymentController) scaleUp(allRCs []*api.ReplicationController, newRC *api.ReplicationController, deployment experimental.Deployment) (bool, error) {
+func (d *DeploymentController) reconcileNewRC(allRCs []*api.ReplicationController, newRC *api.ReplicationController, deployment experimental.Deployment) (bool, error) {
 	if newRC.Spec.Replicas == deployment.Spec.Replicas {
-		// Scaling up not required.
+		// Scaling not required.
 		return false, nil
 	}
+	if newRC.Spec.Replicas > deployment.Spec.Replicas {
+		// Scale down.
+		_, err := d.scaleRCAndRecordEvent(newRC, deployment.Spec.Replicas, deployment)
+		return true, err
+	}
+	// Check if we can scale up.
 	maxSurge, isPercent, err := util.GetIntOrPercentValue(&deployment.Spec.Strategy.RollingUpdate.MaxSurge)
 	if err != nil {
-		return false, fmt.Errorf("Invalid value for MaxSurge: %v", err)
+		return false, fmt.Errorf("invalid value for MaxSurge: %v", err)
 	}
 	if isPercent {
 		maxSurge = util.GetValueFromPercent(maxSurge, deployment.Spec.Replicas)
 	}
 	// Find the total number of pods
-	allPods, err := d.getPodsForRCs(allRCs)
-	if err != nil {
-		return false, err
-	}
-	currentPodCount := len(allPods)
-	// Check if we can scale up.
+	currentPodCount := deploymentUtil.GetReplicaCountForRCs(allRCs)
 	maxTotalPods := deployment.Spec.Replicas + maxSurge
 	if currentPodCount >= maxTotalPods {
 		// Cannot scale up.
@@ -195,20 +185,22 @@ func (d *DeploymentController) scaleUp(allRCs []*api.ReplicationController, newR
 	}
 	// Scale up.
 	scaleUpCount := maxTotalPods - currentPodCount
+	// Do not exceed the number of desired replicas.
 	scaleUpCount = int(math.Min(float64(scaleUpCount), float64(deployment.Spec.Replicas-newRC.Spec.Replicas)))
-	_, err = d.scaleRC(newRC, newRC.Spec.Replicas+scaleUpCount)
+	newReplicasCount := newRC.Spec.Replicas + scaleUpCount
+	_, err = d.scaleRCAndRecordEvent(newRC, newReplicasCount, deployment)
 	return true, err
 }
 
-func (d *DeploymentController) scaleDown(allRCs []*api.ReplicationController, oldRCs []*api.ReplicationController, newRC *api.ReplicationController, deployment experimental.Deployment) (bool, error) {
-	oldPodsCount := d.getReplicaCountForRCs(oldRCs)
+func (d *DeploymentController) reconcileOldRCs(allRCs []*api.ReplicationController, oldRCs []*api.ReplicationController, newRC *api.ReplicationController, deployment experimental.Deployment) (bool, error) {
+	oldPodsCount := deploymentUtil.GetReplicaCountForRCs(oldRCs)
 	if oldPodsCount == 0 {
 		// Cant scale down further
 		return false, nil
 	}
 	maxUnavailable, isPercent, err := util.GetIntOrPercentValue(&deployment.Spec.Strategy.RollingUpdate.MaxUnavailable)
 	if err != nil {
-		return false, fmt.Errorf("Invalid value for MaxUnavailable: %v", err)
+		return false, fmt.Errorf("invalid value for MaxUnavailable: %v", err)
 	}
 	if isPercent {
 		maxUnavailable = util.GetValueFromPercent(maxUnavailable, deployment.Spec.Replicas)
@@ -216,13 +208,9 @@ func (d *DeploymentController) scaleDown(allRCs []*api.ReplicationController, ol
 	// Check if we can scale down.
 	minAvailable := deployment.Spec.Replicas - maxUnavailable
 	// Find the number of ready pods.
-	// TODO: Use MinReadySeconds once https://github.com/kubernetes/kubernetes/pull/12894 is merged.
-	readyPodCount := 0
-	allPods, err := d.getPodsForRCs(allRCs)
-	for _, pod := range allPods {
-		if api.IsPodReady(&pod) {
-			readyPodCount++
-		}
+	readyPodCount, err := deploymentUtil.GetAvailablePodsForRCs(d.client, allRCs)
+	if err != nil {
+		return false, fmt.Errorf("could not find available pods: %v", err)
 	}
 
 	if readyPodCount <= minAvailable {
@@ -241,7 +229,8 @@ func (d *DeploymentController) scaleDown(allRCs []*api.ReplicationController, ol
 		}
 		// Scale down.
 		scaleDownCount := int(math.Min(float64(targetRC.Spec.Replicas), float64(totalScaleDownCount)))
-		_, err = d.scaleRC(targetRC, targetRC.Spec.Replicas-scaleDownCount)
+		newReplicasCount := targetRC.Spec.Replicas - scaleDownCount
+		_, err = d.scaleRCAndRecordEvent(targetRC, newReplicasCount, deployment)
 		if err != nil {
 			return false, err
 		}
@@ -251,8 +240,8 @@ func (d *DeploymentController) scaleDown(allRCs []*api.ReplicationController, ol
 }
 
 func (d *DeploymentController) updateDeploymentStatus(allRCs []*api.ReplicationController, newRC *api.ReplicationController, deployment experimental.Deployment) error {
-	totalReplicas := d.getReplicaCountForRCs(allRCs)
-	updatedReplicas := d.getReplicaCountForRCs([]*api.ReplicationController{newRC})
+	totalReplicas := deploymentUtil.GetReplicaCountForRCs(allRCs)
+	updatedReplicas := deploymentUtil.GetReplicaCountForRCs([]*api.ReplicationController{newRC})
 	newDeployment := deployment
 	// TODO: Reconcile this with API definition. API definition talks about ready pods, while this just computes created pods.
 	newDeployment.Status = experimental.DeploymentStatus{
@@ -261,6 +250,18 @@ func (d *DeploymentController) updateDeploymentStatus(allRCs []*api.ReplicationC
 	}
 	_, err := d.updateDeployment(&newDeployment)
 	return err
+}
+
+func (d *DeploymentController) scaleRCAndRecordEvent(rc *api.ReplicationController, newScale int, deployment experimental.Deployment) (*api.ReplicationController, error) {
+	scalingOperation := "down"
+	if rc.Spec.Replicas < newScale {
+		scalingOperation = "up"
+	}
+	newRC, err := d.scaleRC(rc, newScale)
+	if err == nil {
+		d.eventRecorder.Eventf(&deployment, "ScalingRC", "Scaled %s rc %s to %d", scalingOperation, rc.Name, newScale)
+	}
+	return newRC, err
 }
 
 func (d *DeploymentController) scaleRC(rc *api.ReplicationController, newScale int) (*api.ReplicationController, error) {

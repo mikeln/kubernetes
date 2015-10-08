@@ -120,7 +120,7 @@ type HorizontalPodAutoscaler struct {
 	Spec HorizontalPodAutoscalerSpec `json:"spec,omitempty"`
 
 	// Status represents the current information about the autoscaler.
-	Status *HorizontalPodAutoscalerStatus `json:"status,omitempty"`
+	Status HorizontalPodAutoscalerStatus `json:"status,omitempty"`
 }
 
 // HorizontalPodAutoscalerList is a list of HorizontalPodAutoscalers.
@@ -312,7 +312,7 @@ type DaemonSetSpec struct {
 
 // DaemonSetStatus represents the current status of a daemon set.
 type DaemonSetStatus struct {
-	// CurrentNumberScheduled is the number of nodes that are running exactly 1
+	// CurrentNumberScheduled is the number of nodes that are running at least 1
 	// daemon pod and are supposed to run the daemon pod.
 	// More info: http://releases.k8s.io/HEAD/docs/admin/daemon.md
 	CurrentNumberScheduled int `json:"currentNumberScheduled"`
@@ -444,8 +444,7 @@ type JobStatus struct {
 	// Successful is the number of pods which reached Phase Succeeded.
 	Successful int `json:"successful,omitempty"`
 
-	// Unsuccessful is the number of pods failures, this applies only to jobs
-	// created with RestartPolicyNever, otherwise this value will always be 0.
+	// Unsuccessful is the number of pods which reached Phase Failed.
 	Unsuccessful int `json:"unsuccessful,omitempty"`
 }
 
@@ -473,9 +472,10 @@ type JobCondition struct {
 	Message string `json:"message,omitempty"`
 }
 
-// An Ingress is a way to give services externally-reachable urls. Each Ingress is a
-// collection of rules that allow inbound connections to reach the endpoints defined by
-// a backend.
+// Ingress is a collection of rules that allow inbound connections to reach the
+// endpoints defined by a backend. An Ingress can be configured to give services
+// externally-reachable urls, load balance traffic, terminate SSL, offer name
+// based virtual hosting etc.
 type Ingress struct {
 	unversioned.TypeMeta `json:",inline"`
 	// Standard object's metadata.
@@ -504,11 +504,13 @@ type IngressList struct {
 
 // IngressSpec describes the Ingress the user wishes to exist.
 type IngressSpec struct {
-	// TODO: Add the ability to specify load-balancer IP just like what Service has already done?
-	// A list of rules used to configure the Ingress.
-	// http://<host>:<port>/<path>?<searchpart> -> IngressBackend
-	// Where parts of the url conform to RFC 1738.
+	// A default backend capable of servicing requests that don't match any
+	// IngressRule. It is optional to allow the loadbalancer controller or
+	// defaulting logic to specify a global default.
+	Backend *IngressBackend `json:"backend,omitempty"`
+	// A list of host rules used to configure the Ingress.
 	Rules []IngressRule `json:"rules"`
+	// TODO: Add the ability to specify load-balancer IP through claims
 }
 
 // IngressStatus describe the current state of the Ingress.
@@ -517,35 +519,125 @@ type IngressStatus struct {
 	LoadBalancer v1.LoadBalancerStatus `json:"loadBalancer,omitempty"`
 }
 
-// IngressRule represents the rules mapping the paths under a specified host to the related backend services.
+// IngressRule represents the rules mapping the paths under a specified host to
+// the related backend services.
 type IngressRule struct {
-	// Host is the fully qualified domain name of a network host, or its IP
-	// address as a set of four decimal digit groups separated by ".".
-	// Conforms to RFC 1738.
+	// Host is the fully qualified domain name of a network host, as defined
+	// by RFC 3986. Note the following deviations from the "host" part of the
+	// URI as defined in the RFC:
+	// 1. IPs are not allowed. Currently an IngressRuleValue can only apply to the
+	//	  IP in the Spec of the parent Ingress.
+	// 2. The `:` delimiter is not respected because ports are not allowed.
+	//	  Currently the port of an Ingress is implicitly :80 for http and
+	//	  :443 for https.
+	// Both these may change in the future.
+	// Incoming requests are matched against the Host before the IngressRuleValue.
 	Host string `json:"host,omitempty"`
+	// IngressRuleValue represents a rule to route requests for this IngressRule.
+	IngressRuleValue `json:",inline"`
+}
 
-	// Paths describe a list of load-balancer rules under the specified host.
-	Paths []IngressPath `json:"paths"`
+// IngressRuleValue represents a rule to apply against incoming requests. If the
+// rule is satisfied, the request is routed to the specified backend.
+type IngressRuleValue struct {
+	//TODO:
+	// 1. Consider renaming this resource and the associated rules so they
+	// aren't tied to Ingress. They can be used to route intra-cluster traffic.
+	// 2. Consider adding fields for ingress-type specific global options
+	// usable by a loadbalancer, like http keep-alive.
+
+	// Currently mixing different types of rules in a single Ingress is
+	// disallowed, so exactly one of the following must be set.
+	HTTP *HTTPIngressRuleValue `json:"http"`
+}
+
+// HTTPIngressRuleValue is a list of http selectors pointing to IngressBackends.
+// In the example: http://<host>/<path>?<searchpart> -> IngressBackend where
+// parts of the url correspond to RFC 3986, this resource will be used to
+// to match against everything after the last '/' and before the first '?'
+// or '#'.
+type HTTPIngressRuleValue struct {
+	// A collection of paths that map requests to IngressBackends.
+	Paths []HTTPIngressPath `json:"paths"`
 }
 
 // IngressPath associates a path regex with an IngressBackend.
 // Incoming urls matching the Path are forwarded to the Backend.
-type IngressPath struct {
+type HTTPIngressPath struct {
 	// Path is a regex matched against the url of an incoming request.
 	Path string `json:"path,omitempty"`
 
-	// Define the referenced service endpoint which the traffic will be forwarded to.
+	// Define the referenced service endpoint which the traffic will be
+	// forwarded to.
 	Backend IngressBackend `json:"backend"`
 }
 
-// IngressBackend describes all endpoints for a given Service, port and protocol.
+// IngressBackend describes all endpoints for a given Service and port.
 type IngressBackend struct {
-	// Specifies the referenced service.
-	ServiceRef v1.LocalObjectReference `json:"serviceRef"`
+	// Specifies the name of the referenced service.
+	ServiceName string `json:"serviceName"`
 
 	// Specifies the port of the referenced service.
-	ServicePort util.IntOrString `json:"servicePort,omitempty"`
+	ServicePort util.IntOrString `json:"servicePort"`
+}
 
-	// Specifies the protocol of the referenced service.
-	Protocol v1.Protocol `json:"protocol,omitempty"`
+type NodeResource string
+
+const (
+	// Percentage of node's CPUs that is currently used.
+	CpuConsumption NodeResource = "CpuConsumption"
+
+	// Percentage of node's CPUs that is currently requested for pods.
+	CpuRequest NodeResource = "CpuRequest"
+
+	// Percentage od node's memory that is currently used.
+	MemConsumption NodeResource = "MemConsumption"
+
+	// Percentage of node's CPUs that is currently requested for pods.
+	MemRequest NodeResource = "MemRequest"
+)
+
+// NodeUtilization describes what percentage of a particular resource is used on a node.
+type NodeUtilization struct {
+	Resource NodeResource `json:"resource"`
+
+	// The accepted values are from 0 to 1.
+	Value float64 `json:"value"`
+}
+
+// Configuration of the Cluster Autoscaler
+type ClusterAutoscalerSpec struct {
+	// Minimum number of nodes that the cluster should have.
+	MinNodes int `json:"minNodes"`
+
+	// Maximum number of nodes that the cluster should have.
+	MaxNodes int `json:"maxNodes"`
+
+	// Target average utilization of the cluster nodes. New nodes will be added if one of the
+	// targets is exceeded. Cluster size will be decreased if the current utilization is too low
+	// for all targets.
+	TargetUtilization []NodeUtilization `json:"target"`
+}
+
+type ClusterAutoscaler struct {
+	unversioned.TypeMeta `json:",inline"`
+
+	// Standard object's metadata.
+	// More info: http://releases.k8s.io/HEAD/docs/devel/api-conventions.md#metadata
+	// For now (experimental api) it is required that the name is set to "ClusterAutoscaler" and namespace is "default".
+	v1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Spec defines the desired behavior of this daemon set.
+	// More info: http://releases.k8s.io/HEAD/docs/devel/api-conventions.md#spec-and-status
+	Spec ClusterAutoscalerSpec `json:"spec,omitempty"`
+}
+
+// There will be just one (or none) ClusterAutoscaler.
+type ClusterAutoscalerList struct {
+	unversioned.TypeMeta `json:",inline"`
+	// Standard object's metadata.
+	// More info: http://releases.k8s.io/HEAD/docs/devel/api-conventions.md#metadata
+	unversioned.ListMeta `json:"metadata,omitempty"`
+
+	Items []ClusterAutoscaler `json:"items"`
 }
