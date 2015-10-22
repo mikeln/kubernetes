@@ -38,7 +38,7 @@ import (
 
 func newStorage(t *testing.T) (*REST, *BindingREST, *StatusREST, *tools.FakeEtcdClient) {
 	etcdStorage, fakeClient := registrytest.NewEtcdStorage(t, "")
-	storage := NewStorage(etcdStorage, false, nil)
+	storage := NewStorage(etcdStorage, false, nil, nil)
 	return storage.Pod, storage.Binding, storage.Status, fakeClient
 }
 
@@ -541,13 +541,6 @@ func TestEtcdCreateBinding(t *testing.T) {
 			},
 			errOK: func(err error) bool { return err == nil },
 		},
-		"kindMinion": {
-			binding: api.Binding{
-				ObjectMeta: api.ObjectMeta{Namespace: api.NamespaceDefault, Name: "foo"},
-				Target:     api.ObjectReference{Name: "machine4", Kind: "Minion"},
-			},
-			errOK: func(err error) bool { return err == nil },
-		},
 	}
 	for k, test := range testCases {
 		storage, bindingStorage, _, fakeClient := newStorage(t)
@@ -735,23 +728,5 @@ func TestEtcdUpdateStatus(t *testing.T) {
 	}
 	if !api.Semantic.DeepEqual(&expected, podOut) {
 		t.Errorf("unexpected object: %s", util.ObjectDiff(&expected, podOut))
-	}
-}
-
-func TestPodLogValidates(t *testing.T) {
-	etcdStorage, _ := registrytest.NewEtcdStorage(t, "")
-	storage := NewStorage(etcdStorage, false, nil)
-
-	negativeOne := int64(-1)
-	testCases := []*api.PodLogOptions{
-		{SinceSeconds: &negativeOne},
-		{TailLines: &negativeOne},
-	}
-
-	for _, tc := range testCases {
-		_, err := storage.Log.Get(api.NewDefaultContext(), "test", tc)
-		if !errors.IsInvalid(err) {
-			t.Fatalf("unexpected error: %v", err)
-		}
 	}
 }

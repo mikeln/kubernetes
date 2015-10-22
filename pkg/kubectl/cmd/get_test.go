@@ -86,29 +86,29 @@ func testData() (*api.PodList, *api.ServiceList, *api.ReplicationControllerList)
 }
 
 func testComponentStatusData() *api.ComponentStatusList {
-	good := &api.ComponentStatus{
+	good := api.ComponentStatus{
 		Conditions: []api.ComponentCondition{
 			{Type: api.ComponentHealthy, Status: api.ConditionTrue, Message: "ok", Error: "nil"},
 		},
+		ObjectMeta: api.ObjectMeta{Name: "servergood"},
 	}
-	good.Name = "servergood"
 
-	bad := &api.ComponentStatus{
+	bad := api.ComponentStatus{
 		Conditions: []api.ComponentCondition{
 			{Type: api.ComponentHealthy, Status: api.ConditionFalse, Message: "", Error: "bad status: 500"},
 		},
+		ObjectMeta: api.ObjectMeta{Name: "serverbad"},
 	}
-	bad.Name = "serverbad"
 
-	unknown := &api.ComponentStatus{
+	unknown := api.ComponentStatus{
 		Conditions: []api.ComponentCondition{
 			{Type: api.ComponentHealthy, Status: api.ConditionUnknown, Message: "", Error: "fizzbuzz error"},
 		},
+		ObjectMeta: api.ObjectMeta{Name: "serverunknown"},
 	}
-	unknown.Name = "serverunknown"
 
 	return &api.ComponentStatusList{
-		Items: []api.ComponentStatus{*good, *bad, *unknown},
+		Items: []api.ComponentStatus{good, bad, unknown},
 	}
 }
 
@@ -314,14 +314,31 @@ func TestGetListObjects(t *testing.T) {
 	cmd.SetOutput(buf)
 	cmd.Run(cmd, []string{"pods"})
 
-	expected := []runtime.Object{pods}
+	expected, err := extractResourceList([]runtime.Object{pods})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	actual := tf.Printer.(*testPrinter).Objects
 	if !reflect.DeepEqual(expected, actual) {
-		t.Errorf("unexpected object: %#v %#v", expected, actual)
+		t.Errorf("unexpected object: expected %#v, got %#v", expected, actual)
 	}
 	if len(buf.String()) == 0 {
 		t.Errorf("unexpected empty output")
 	}
+}
+
+func extractResourceList(objs []runtime.Object) ([]runtime.Object, error) {
+	finalObjs := []runtime.Object{}
+	for _, obj := range objs {
+		items, err := runtime.ExtractList(obj)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			finalObjs = append(finalObjs, item)
+		}
+	}
+	return finalObjs, nil
 }
 
 func TestGetAllListObjects(t *testing.T) {
@@ -341,7 +358,10 @@ func TestGetAllListObjects(t *testing.T) {
 	cmd.Flags().Set("show-all", "true")
 	cmd.Run(cmd, []string{"pods"})
 
-	expected := []runtime.Object{pods}
+	expected, err := extractResourceList([]runtime.Object{pods})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	actual := tf.Printer.(*testPrinter).Objects
 	if !reflect.DeepEqual(expected, actual) {
 		t.Errorf("unexpected object: %#v %#v", expected, actual)
@@ -367,10 +387,13 @@ func TestGetListComponentStatus(t *testing.T) {
 	cmd.SetOutput(buf)
 	cmd.Run(cmd, []string{"componentstatuses"})
 
-	expected := []runtime.Object{statuses}
+	expected, err := extractResourceList([]runtime.Object{statuses})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	actual := tf.Printer.(*testPrinter).Objects
 	if !reflect.DeepEqual(expected, actual) {
-		t.Errorf("unexpected object: %#v %#v", expected, actual)
+		t.Errorf("unexpected object: expected %#v, got %#v", expected, actual)
 	}
 	if len(buf.String()) == 0 {
 		t.Errorf("unexpected empty output")
@@ -403,7 +426,10 @@ func TestGetMultipleTypeObjects(t *testing.T) {
 	cmd.SetOutput(buf)
 	cmd.Run(cmd, []string{"pods,services"})
 
-	expected := []runtime.Object{pods, svc}
+	expected, err := extractResourceList([]runtime.Object{pods, svc})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	actual := tf.Printer.(*testPrinter).Objects
 	if !reflect.DeepEqual(expected, actual) {
 		t.Errorf("unexpected object: %#v", actual)
@@ -481,7 +507,7 @@ func TestGetMultipleTypeObjectsWithSelector(t *testing.T) {
 	tf.Client = &fake.RESTClient{
 		Codec: codec,
 		Client: fake.HTTPClientFunc(func(req *http.Request) (*http.Response, error) {
-			if req.URL.Query().Get(api.LabelSelectorQueryParam(testapi.Default.Version())) != "a=b" {
+			if req.URL.Query().Get(unversioned.LabelSelectorQueryParam(testapi.Default.Version())) != "a=b" {
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 			}
 			switch req.URL.Path {
@@ -504,7 +530,10 @@ func TestGetMultipleTypeObjectsWithSelector(t *testing.T) {
 	cmd.Flags().Set("selector", "a=b")
 	cmd.Run(cmd, []string{"pods,services"})
 
-	expected := []runtime.Object{pods, svc}
+	expected, err := extractResourceList([]runtime.Object{pods, svc})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	actual := tf.Printer.(*testPrinter).Objects
 	if !reflect.DeepEqual(expected, actual) {
 		t.Errorf("unexpected object: %#v", actual)
@@ -604,7 +633,7 @@ func TestWatchSelector(t *testing.T) {
 	tf.Client = &fake.RESTClient{
 		Codec: codec,
 		Client: fake.HTTPClientFunc(func(req *http.Request) (*http.Response, error) {
-			if req.URL.Query().Get(api.LabelSelectorQueryParam(testapi.Default.Version())) != "a=b" {
+			if req.URL.Query().Get(unversioned.LabelSelectorQueryParam(testapi.Default.Version())) != "a=b" {
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 			}
 			switch req.URL.Path {

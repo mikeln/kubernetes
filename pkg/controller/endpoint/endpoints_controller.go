@@ -16,7 +16,7 @@ limitations under the License.
 
 // CAUTION: If you update code in this file, you may need to also update code
 //          in contrib/mesos/pkg/service/endpoints_controller.go
-package endpointcontroller
+package endpoint
 
 import (
 	"fmt"
@@ -62,7 +62,7 @@ func NewEndpointController(client *client.Client, resyncPeriod controller.Resync
 	e.serviceStore.Store, e.serviceController = framework.NewInformer(
 		&cache.ListWatch{
 			ListFunc: func() (runtime.Object, error) {
-				return e.client.Services(api.NamespaceAll).List(labels.Everything())
+				return e.client.Services(api.NamespaceAll).List(labels.Everything(), fields.Everything())
 			},
 			WatchFunc: func(rv string) (watch.Interface, error) {
 				return e.client.Services(api.NamespaceAll).Watch(labels.Everything(), fields.Everything(), rv)

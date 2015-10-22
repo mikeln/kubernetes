@@ -23,7 +23,7 @@ import (
 
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/apis/experimental"
+	"k8s.io/kubernetes/pkg/apis/extensions"
 	"k8s.io/kubernetes/pkg/client/cache"
 	"k8s.io/kubernetes/pkg/client/record"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
@@ -97,28 +97,28 @@ func NewDaemonSetsController(kubeClient client.Interface, resyncPeriod controlle
 	dsc.dsStore.Store, dsc.dsController = framework.NewInformer(
 		&cache.ListWatch{
 			ListFunc: func() (runtime.Object, error) {
-				return dsc.kubeClient.Experimental().DaemonSets(api.NamespaceAll).List(labels.Everything())
+				return dsc.kubeClient.Extensions().DaemonSets(api.NamespaceAll).List(labels.Everything(), fields.Everything())
 			},
 			WatchFunc: func(rv string) (watch.Interface, error) {
-				return dsc.kubeClient.Experimental().DaemonSets(api.NamespaceAll).Watch(labels.Everything(), fields.Everything(), rv)
+				return dsc.kubeClient.Extensions().DaemonSets(api.NamespaceAll).Watch(labels.Everything(), fields.Everything(), rv)
 			},
 		},
-		&experimental.DaemonSet{},
+		&extensions.DaemonSet{},
 		// TODO: Can we have much longer period here?
 		FullDaemonSetResyncPeriod,
 		framework.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				ds := obj.(*experimental.DaemonSet)
+				ds := obj.(*extensions.DaemonSet)
 				glog.V(4).Infof("Adding daemon set %s", ds.Name)
 				dsc.enqueueDaemonSet(obj)
 			},
 			UpdateFunc: func(old, cur interface{}) {
-				oldDS := old.(*experimental.DaemonSet)
+				oldDS := old.(*extensions.DaemonSet)
 				glog.V(4).Infof("Updating daemon set %s", oldDS.Name)
 				dsc.enqueueDaemonSet(cur)
 			},
 			DeleteFunc: func(obj interface{}) {
-				ds := obj.(*experimental.DaemonSet)
+				ds := obj.(*extensions.DaemonSet)
 				glog.V(4).Infof("Deleting daemon set %s", ds.Name)
 				dsc.enqueueDaemonSet(obj)
 			},
@@ -218,7 +218,7 @@ func (dsc *DaemonSetsController) enqueueDaemonSet(obj interface{}) {
 	dsc.queue.Add(key)
 }
 
-func (dsc *DaemonSetsController) getPodDaemonSet(pod *api.Pod) *experimental.DaemonSet {
+func (dsc *DaemonSetsController) getPodDaemonSet(pod *api.Pod) *extensions.DaemonSet {
 	sets, err := dsc.dsStore.GetPodDaemonSets(pod)
 	if err != nil {
 		glog.V(4).Infof("No daemon sets found for pod %v, daemon set controller will avoid syncing", pod.Name)
@@ -321,7 +321,7 @@ func (dsc *DaemonSetsController) updateNode(old, cur interface{}) {
 }
 
 // getNodesToDaemonSetPods returns a map from nodes to daemon pods (corresponding to ds) running on the nodes.
-func (dsc *DaemonSetsController) getNodesToDaemonPods(ds *experimental.DaemonSet) (map[string][]*api.Pod, error) {
+func (dsc *DaemonSetsController) getNodesToDaemonPods(ds *extensions.DaemonSet) (map[string][]*api.Pod, error) {
 	nodeToDaemonPods := make(map[string][]*api.Pod)
 	daemonPods, err := dsc.podStore.Pods(ds.Namespace).List(labels.Set(ds.Spec.Selector).AsSelector())
 	if err != nil {
@@ -334,7 +334,7 @@ func (dsc *DaemonSetsController) getNodesToDaemonPods(ds *experimental.DaemonSet
 	return nodeToDaemonPods, nil
 }
 
-func (dsc *DaemonSetsController) manage(ds *experimental.DaemonSet) {
+func (dsc *DaemonSetsController) manage(ds *extensions.DaemonSet) {
 	// Find out which nodes are running the daemon pods selected by ds.
 	nodeToDaemonPods, err := dsc.getNodesToDaemonPods(ds)
 	if err != nil {
@@ -401,16 +401,17 @@ func (dsc *DaemonSetsController) manage(ds *experimental.DaemonSet) {
 	}
 }
 
-func storeDaemonSetStatus(dsClient client.DaemonSetInterface, ds *experimental.DaemonSet, desiredNumberScheduled, currentNumberScheduled, numberMisscheduled int) error {
+func storeDaemonSetStatus(dsClient client.DaemonSetInterface, ds *extensions.DaemonSet, desiredNumberScheduled, currentNumberScheduled, numberMisscheduled int) error {
 	if ds.Status.DesiredNumberScheduled == desiredNumberScheduled && ds.Status.CurrentNumberScheduled == currentNumberScheduled && ds.Status.NumberMisscheduled == numberMisscheduled {
 		return nil
 	}
 
+	ds.Status.DesiredNumberScheduled = desiredNumberScheduled
+	ds.Status.CurrentNumberScheduled = currentNumberScheduled
+	ds.Status.NumberMisscheduled = numberMisscheduled
+
 	var updateErr, getErr error
 	for i := 0; i <= StatusUpdateRetries; i++ {
-		ds.Status.DesiredNumberScheduled = desiredNumberScheduled
-		ds.Status.CurrentNumberScheduled = currentNumberScheduled
-		ds.Status.NumberMisscheduled = numberMisscheduled
 		_, updateErr = dsClient.UpdateStatus(ds)
 		if updateErr == nil {
 			// successful update
@@ -426,7 +427,7 @@ func storeDaemonSetStatus(dsClient client.DaemonSetInterface, ds *experimental.D
 	return updateErr
 }
 
-func (dsc *DaemonSetsController) updateDaemonSetStatus(ds *experimental.DaemonSet) {
+func (dsc *DaemonSetsController) updateDaemonSetStatus(ds *extensions.DaemonSet) {
 	glog.V(4).Infof("Updating daemon set status")
 	nodeToDaemonPods, err := dsc.getNodesToDaemonPods(ds)
 	if err != nil {
@@ -460,7 +461,7 @@ func (dsc *DaemonSetsController) updateDaemonSetStatus(ds *experimental.DaemonSe
 		}
 	}
 
-	err = storeDaemonSetStatus(dsc.kubeClient.Experimental().DaemonSets(ds.Namespace), ds, desiredNumberScheduled, currentNumberScheduled, numberMisscheduled)
+	err = storeDaemonSetStatus(dsc.kubeClient.Extensions().DaemonSets(ds.Namespace), ds, desiredNumberScheduled, currentNumberScheduled, numberMisscheduled)
 	if err != nil {
 		glog.Errorf("Error storing status for daemon set %+v: %v", ds, err)
 	}
@@ -482,7 +483,7 @@ func (dsc *DaemonSetsController) syncDaemonSet(key string) error {
 		dsc.expectations.DeleteExpectations(key)
 		return nil
 	}
-	ds := obj.(*experimental.DaemonSet)
+	ds := obj.(*extensions.DaemonSet)
 	if !dsc.podStoreSynced() {
 		// Sleep so we give the pod reflector goroutine a chance to run.
 		time.Sleep(PodStoreSyncedPollPeriod)
@@ -509,7 +510,7 @@ func (dsc *DaemonSetsController) syncDaemonSet(key string) error {
 }
 
 // byCreationTimestamp sorts a list by creation timestamp, using their names as a tie breaker.
-type byCreationTimestamp []experimental.DaemonSet
+type byCreationTimestamp []extensions.DaemonSet
 
 func (o byCreationTimestamp) Len() int      { return len(o) }
 func (o byCreationTimestamp) Swap(i, j int) { o[i], o[j] = o[j], o[i] }

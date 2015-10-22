@@ -34,7 +34,7 @@ import (
 	"k8s.io/kubernetes/pkg/api/resource"
 	"k8s.io/kubernetes/pkg/kubelet/cadvisor"
 	"k8s.io/kubernetes/pkg/util"
-	"k8s.io/kubernetes/pkg/util/errors"
+	utilerrors "k8s.io/kubernetes/pkg/util/errors"
 	"k8s.io/kubernetes/pkg/util/mount"
 	"k8s.io/kubernetes/pkg/util/oom"
 	"k8s.io/kubernetes/pkg/util/sets"
@@ -142,26 +142,48 @@ func createManager(containerName string) *fs.Manager {
 	}
 }
 
-const sysctlVmOvercommitMemory = "vm/overcommit_memory"
+// TODO: plumb this up as a flag to Kubelet in a future PR
+type KernelTunableBehavior string
 
-// disableKernelMemoryOvercommitHandling tells the kernel to perform no memory over-commit handling.
-// Under this setting, the potential for memory overload is increased, but so is performance for
-// memory-intensive tasks
-// sets /proc/sys/vm/overcommit_memory to 1
-func disableKernelMemoryOvercommitHandling() error {
-	val, err := utilsysctl.GetSysctl(sysctlVmOvercommitMemory)
-	if err != nil {
-		return err
+const (
+	KernelTunableWarn   KernelTunableBehavior = "warn"
+	KernelTunableError  KernelTunableBehavior = "error"
+	KernelTunableModify KernelTunableBehavior = "modify"
+)
+
+// setupKernelTunables validates kernel tunable flags are set as expected
+// depending upon the specified option, it will either warn, error, or modify the kernel tunable flags
+func setupKernelTunables(option KernelTunableBehavior) error {
+	desiredState := map[string]int{
+		utilsysctl.VmOvercommitMemory: utilsysctl.VmOvercommitMemoryAlways,
+		utilsysctl.VmPanicOnOOM:       utilsysctl.VmPanicOnOOMInvokeOOMKiller,
 	}
-	if val == 1 {
-		return nil
+
+	errList := []error{}
+	for flag, expectedValue := range desiredState {
+		val, err := utilsysctl.GetSysctl(flag)
+		if err != nil {
+			errList = append(errList, err)
+			continue
+		}
+		if val == expectedValue {
+			continue
+		}
+
+		switch option {
+		case KernelTunableError:
+			errList = append(errList, fmt.Errorf("Invalid kernel flag: %v, expected value: %v, actual value: %v", flag, expectedValue, val))
+		case KernelTunableWarn:
+			glog.V(2).Infof("Invalid kernel flag: %v, expected value: %v, actual value: %v", flag, expectedValue, val)
+		case KernelTunableModify:
+			glog.V(2).Infof("Updating kernel flag: %v, expected value: %v, actual value: %v", flag, expectedValue, val)
+			err = utilsysctl.SetSysctl(flag, expectedValue)
+			if err != nil {
+				errList = append(errList, err)
+			}
+		}
 	}
-	glog.V(2).Infof("Updating kernel memory overcommit flag from %v to %v", val, 1)
-	err = utilsysctl.SetSysctl(sysctlVmOvercommitMemory, 1)
-	if err != nil {
-		return err
-	}
-	return nil
+	return utilerrors.NewAggregate(errList)
 }
 
 func (cm *containerManagerImpl) setupNode() error {
@@ -169,7 +191,8 @@ func (cm *containerManagerImpl) setupNode() error {
 		return err
 	}
 
-	if err := disableKernelMemoryOvercommitHandling(); err != nil {
+	// TODO: plumb kernel tunable options into container manager, right now, we modify by default
+	if err := setupKernelTunables(KernelTunableModify); err != nil {
 		return err
 	}
 
@@ -317,7 +340,7 @@ func ensureDockerInContainer(cadvisor cadvisor.Interface, oomScoreAdj int, manag
 		}
 	}
 
-	return errors.NewAggregate(errs)
+	return utilerrors.NewAggregate(errs)
 }
 
 // Gets the (CPU) container the specified pid is in.
@@ -391,7 +414,7 @@ func ensureSystemContainer(rootContainer *fs.Manager, manager *fs.Manager) error
 		errs = append(errs, fmt.Errorf("ran out of attempts to create system containers %q", manager.Cgroups.Name))
 	}
 
-	return errors.NewAggregate(errs)
+	return utilerrors.NewAggregate(errs)
 }
 
 // Determines whether the specified PID is a kernel PID.

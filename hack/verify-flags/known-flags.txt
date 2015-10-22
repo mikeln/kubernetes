@@ -46,6 +46,7 @@ cluster-domain
 cluster-name
 cluster-tag
 concurrent-endpoint-syncs
+config-sync-period
 configure-cbr0
 contain-pod-resources
 container-port
@@ -54,6 +55,7 @@ cors-allowed-origins
 create-external-load-balancer
 current-release-pr
 current-replicas
+cpu-percent
 default-container-cpu-limit
 default-container-mem-limit
 delay-shutdown
@@ -71,7 +73,6 @@ duration-sec
 e2e-verify-service-account
 e2e-output-dir
 enable-debugging-handlers
-enable-experimental
 enable-server
 etcd-config
 etcd-prefix
@@ -129,6 +130,8 @@ ir-user
 jenkins-host
 jenkins-jobs
 km-path
+kube-api-burst
+kube-api-qps
 kubectl-path
 kubelet-cadvisor-port
 kubelet-certificate-authority
@@ -147,6 +150,7 @@ kubelet-timeout
 kube-master
 label-columns
 last-release-pr
+leave-stdin-open
 limit-bytes
 load-balancer-ip
 log-flush-frequency
@@ -258,8 +262,10 @@ service-account-lookup
 service-account-private-key-file
 service-address
 service-cluster-ip-range
+service-generator
 service-node-port-range
 service-node-ports
+service-overrides
 service-sync-period
 session-affinity
 since-seconds
@@ -301,4 +307,7 @@ retry_time
 file_content_in_loop
 cpu-cfs-quota
 terminated-pod-gc-threshold
+reconcile-cidr
+register-schedulable
+repair-malformed-updates
 

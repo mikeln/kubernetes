@@ -32,24 +32,25 @@ import (
 	"strconv"
 	"time"
 
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
 	clientcmdapi "k8s.io/kubernetes/pkg/client/unversioned/clientcmd/api"
 	"k8s.io/kubernetes/pkg/cloudprovider"
 	"k8s.io/kubernetes/pkg/controller/daemon"
 	"k8s.io/kubernetes/pkg/controller/deployment"
-	"k8s.io/kubernetes/pkg/controller/endpoint"
+	endpointcontroller "k8s.io/kubernetes/pkg/controller/endpoint"
 	"k8s.io/kubernetes/pkg/controller/gc"
 	"k8s.io/kubernetes/pkg/controller/job"
-	"k8s.io/kubernetes/pkg/controller/namespace"
-	"k8s.io/kubernetes/pkg/controller/node"
-	"k8s.io/kubernetes/pkg/controller/persistentvolume"
+	namespacecontroller "k8s.io/kubernetes/pkg/controller/namespace"
+	nodecontroller "k8s.io/kubernetes/pkg/controller/node"
+	persistentvolumecontroller "k8s.io/kubernetes/pkg/controller/persistentvolume"
 	"k8s.io/kubernetes/pkg/controller/podautoscaler"
 	"k8s.io/kubernetes/pkg/controller/podautoscaler/metrics"
-	replicationControllerPkg "k8s.io/kubernetes/pkg/controller/replication"
-	"k8s.io/kubernetes/pkg/controller/resourcequota"
-	"k8s.io/kubernetes/pkg/controller/route"
-	"k8s.io/kubernetes/pkg/controller/service"
+	replicationcontroller "k8s.io/kubernetes/pkg/controller/replication"
+	resourcequotacontroller "k8s.io/kubernetes/pkg/controller/resourcequota"
+	routecontroller "k8s.io/kubernetes/pkg/controller/route"
+	servicecontroller "k8s.io/kubernetes/pkg/controller/service"
 	"k8s.io/kubernetes/pkg/controller/serviceaccount"
 	"k8s.io/kubernetes/pkg/healthz"
 	"k8s.io/kubernetes/pkg/master/ports"
@@ -91,14 +92,15 @@ type CMServer struct {
 	ServiceAccountKeyFile             string
 	RootCAFile                        string
 
-	ClusterName        string
-	ClusterCIDR        net.IPNet
-	AllocateNodeCIDRs  bool
-	EnableProfiling    bool
-	EnableExperimental bool
+	ClusterName       string
+	ClusterCIDR       net.IPNet
+	AllocateNodeCIDRs bool
+	EnableProfiling   bool
 
-	Master     string
-	Kubeconfig string
+	Master       string
+	Kubeconfig   string
+	KubeApiQps   float32
+	KubeApiBurst int
 }
 
 // NewCMServer creates a new CMServer with a default config.
@@ -121,6 +123,7 @@ func NewCMServer() *CMServer {
 		RegisterRetryCount:                10,
 		PodEvictionTimeout:                5 * time.Minute,
 		ClusterName:                       "kubernetes",
+		TerminatedPodGCThreshold:          12500,
 		VolumeConfigFlags: VolumeConfigFlags{
 			// default values here
 			PersistentVolumeRecyclerMinimumTimeoutNFS:        300,
@@ -128,6 +131,8 @@ func NewCMServer() *CMServer {
 			PersistentVolumeRecyclerMinimumTimeoutHostPath:   60,
 			PersistentVolumeRecyclerIncrementTimeoutHostPath: 30,
 		},
+		KubeApiQps:   20.0,
+		KubeApiBurst: 30,
 	}
 	return &s
 }
@@ -192,7 +197,8 @@ func (s *CMServer) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&s.Master, "master", s.Master, "The address of the Kubernetes API server (overrides any value in kubeconfig)")
 	fs.StringVar(&s.Kubeconfig, "kubeconfig", s.Kubeconfig, "Path to kubeconfig file with authorization and master location information.")
 	fs.StringVar(&s.RootCAFile, "root-ca-file", s.RootCAFile, "If set, this root certificate authority will be included in service account's token secret. This must be a valid PEM-encoded CA bundle.")
-	fs.BoolVar(&s.EnableExperimental, "enable-experimental", s.EnableExperimental, "Enables experimental controllers (requires enabling experimental API on apiserver).")
+	fs.Float32Var(&s.KubeApiQps, "kube-api-qps", s.KubeApiQps, "QPS to use while talking with kubernetes apiserver")
+	fs.IntVar(&s.KubeApiBurst, "kube-api-burst", s.KubeApiBurst, "Burst to use while talking with kubernetes apiserver")
 }
 
 func (s *CMServer) resyncPeriod() time.Duration {
@@ -215,8 +221,9 @@ func (s *CMServer) Run(_ []string) error {
 		return err
 	}
 
-	kubeconfig.QPS = 20.0
-	kubeconfig.Burst = 30
+	// Override kubeconfig qps/burst settings from flags
+	kubeconfig.QPS = s.KubeApiQps
+	kubeconfig.Burst = s.KubeApiBurst
 
 	kubeClient, err := client.New(kubeconfig)
 	if err != nil {
@@ -243,7 +250,7 @@ func (s *CMServer) Run(_ []string) error {
 	go endpointcontroller.NewEndpointController(kubeClient, s.resyncPeriod).
 		Run(s.ConcurrentEndpointSyncs, util.NeverStop)
 
-	go replicationControllerPkg.NewReplicationManager(kubeClient, s.resyncPeriod, replicationControllerPkg.BurstReplicas).
+	go replicationcontroller.NewReplicationManager(kubeClient, s.resyncPeriod, replicationcontroller.BurstReplicas).
 		Run(s.ConcurrentRCSyncs, util.NeverStop)
 
 	if s.TerminatedPodGCThreshold > 0 {
@@ -280,26 +287,53 @@ func (s *CMServer) Run(_ []string) error {
 
 	resourcequotacontroller.NewResourceQuotaController(kubeClient).Run(s.ResourceQuotaSyncPeriod)
 
-	namespacecontroller.NewNamespaceController(kubeClient, s.EnableExperimental, s.NamespaceSyncPeriod).Run()
+	versionStrings, err := client.ServerAPIVersions(kubeconfig)
+	if err != nil {
+		glog.Fatalf("Failed to get api versions from server: %v", err)
+	}
+	versions := &unversioned.APIVersions{Versions: versionStrings}
 
-	if s.EnableExperimental {
-		go daemon.NewDaemonSetsController(kubeClient, s.resyncPeriod).
-			Run(s.ConcurrentDSCSyncs, util.NeverStop)
-
-		go job.NewJobController(kubeClient, s.resyncPeriod).
-			Run(s.ConcurrentJobSyncs, util.NeverStop)
-
-		podautoscaler.NewHorizontalController(kubeClient, metrics.NewHeapsterMetricsClient(kubeClient)).
-			Run(s.HorizontalPodAutoscalerSyncPeriod)
-
-		deployment.New(kubeClient).
-			Run(s.DeploymentControllerSyncPeriod)
+	resourceMap, err := kubeClient.Discovery().ServerResources()
+	if err != nil {
+		glog.Fatalf("Failed to get supported resources from server: %v", err)
 	}
 
-	pvclaimBinder := volumeclaimbinder.NewPersistentVolumeClaimBinder(kubeClient, s.PVClaimBinderSyncPeriod)
+	namespacecontroller.NewNamespaceController(kubeClient, versions, s.NamespaceSyncPeriod).Run()
+
+	groupVersion := "extensions/v1beta1"
+	resources, found := resourceMap[groupVersion]
+	// TODO: this needs to be dynamic so users don't have to restart their controller manager if they change the apiserver
+	if containsVersion(versions, groupVersion) && found {
+		glog.Infof("Starting %s apis", groupVersion)
+		if containsResource(resources, "horizontalpodautoscalers") {
+			glog.Infof("Starting horizontal pod controller.")
+			podautoscaler.NewHorizontalController(kubeClient, metrics.NewHeapsterMetricsClient(kubeClient)).
+				Run(s.HorizontalPodAutoscalerSyncPeriod)
+		}
+
+		if containsResource(resources, "daemonsets") {
+			glog.Infof("Starting daemon set controller")
+			go daemon.NewDaemonSetsController(kubeClient, s.resyncPeriod).
+				Run(s.ConcurrentDSCSyncs, util.NeverStop)
+		}
+
+		if containsResource(resources, "jobs") {
+			glog.Infof("Starting job controller")
+			go job.NewJobController(kubeClient, s.resyncPeriod).
+				Run(s.ConcurrentJobSyncs, util.NeverStop)
+		}
+
+		if containsResource(resources, "deployments") {
+			glog.Infof("Starting deployment controller")
+			deployment.New(kubeClient).
+				Run(s.DeploymentControllerSyncPeriod)
+		}
+	}
+
+	pvclaimBinder := persistentvolumecontroller.NewPersistentVolumeClaimBinder(kubeClient, s.PVClaimBinderSyncPeriod)
 	pvclaimBinder.Run()
 
-	pvRecycler, err := volumeclaimbinder.NewPersistentVolumeRecycler(kubeClient, s.PVClaimBinderSyncPeriod, ProbeRecyclableVolumePlugins(s.VolumeConfigFlags))
+	pvRecycler, err := persistentvolumecontroller.NewPersistentVolumeRecycler(kubeClient, s.PVClaimBinderSyncPeriod, ProbeRecyclableVolumePlugins(s.VolumeConfigFlags))
 	if err != nil {
 		glog.Fatalf("Failed to start persistent volume recycler: %+v", err)
 	}
@@ -340,4 +374,23 @@ func (s *CMServer) Run(_ []string) error {
 	).Run()
 
 	select {}
+}
+
+func containsVersion(versions *unversioned.APIVersions, version string) bool {
+	for ix := range versions.Versions {
+		if versions.Versions[ix] == version {
+			return true
+		}
+	}
+	return false
+}
+
+func containsResource(resources *unversioned.APIResourceList, resourceName string) bool {
+	for ix := range resources.APIResources {
+		resource := resources.APIResources[ix]
+		if resource.Name == resourceName {
+			return true
+		}
+	}
+	return false
 }
