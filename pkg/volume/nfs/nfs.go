@@ -19,12 +19,10 @@ package nfs
 import (
 	"fmt"
 	"os"
-	"runtime"
 
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/types"
 	"k8s.io/kubernetes/pkg/util"
-	"k8s.io/kubernetes/pkg/util/exec"
 	"k8s.io/kubernetes/pkg/util/mount"
 	"k8s.io/kubernetes/pkg/volume"
 
@@ -68,29 +66,9 @@ func (plugin *nfsPlugin) Name() string {
 	return nfsPluginName
 }
 
-func hasNFSMount() bool {
-	exe := exec.New()
-	switch runtime.GOOS {
-	case "linux":
-		cmd1 := exe.Command("/bin/ls", "/sbin/mount.nfs")
-		_, err1 := cmd1.CombinedOutput()
-		cmd2 := exe.Command("/bin/ls", "/sbin/mount.nfs4")
-		_, err2 := cmd2.CombinedOutput()
-		return (err1 == nil || err2 == nil)
-	case "darwin":
-		cmd := exe.Command("/bin/ls", "/sbin/mount_nfs")
-		_, err := cmd.CombinedOutput()
-		return err == nil
-	}
-	return false
-}
-
 func (plugin *nfsPlugin) CanSupport(spec *volume.Spec) bool {
-	if (spec.Volume != nil && spec.Volume.NFS == nil) || (spec.PersistentVolume != nil && spec.PersistentVolume.Spec.NFS == nil) {
-		return false
-	}
-	// see if /sbin/mount.nfs* is there
-	return hasNFSMount()
+	return (spec.PersistentVolume != nil && spec.PersistentVolume.Spec.NFS != nil) ||
+		(spec.Volume != nil && spec.Volume.NFS != nil)
 }
 
 func (plugin *nfsPlugin) GetAccessModes() []api.PersistentVolumeAccessMode {
@@ -169,6 +147,10 @@ type nfsBuilder struct {
 
 var _ volume.Builder = &nfsBuilder{}
 
+func (_ *nfsBuilder) SupportsOwnershipManagement() bool {
+	return false
+}
+
 // SetUp attaches the disk and bind mounts to the volume path.
 func (b *nfsBuilder) SetUp() error {
 	return b.SetUpAt(b.GetPath())
@@ -220,6 +202,10 @@ func (b *nfsBuilder) SetUpAt(dir string) error {
 
 func (b *nfsBuilder) IsReadOnly() bool {
 	return b.readOnly
+}
+
+func (b *nfsBuilder) SupportsSELinux() bool {
+	return false
 }
 
 //

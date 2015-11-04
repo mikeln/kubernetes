@@ -26,6 +26,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -75,23 +76,12 @@ var proxyRegexp = regexp.MustCompile("Starting to serve on 127.0.0.1:([0-9]+)")
 
 var _ = Describe("Kubectl client", func() {
 	defer GinkgoRecover()
+	framework := NewFramework("kubectl")
 	var c *client.Client
 	var ns string
-	var testingNs *api.Namespace
 	BeforeEach(func() {
-		var err error
-		c, err = loadClient()
-		expectNoError(err)
-		testingNs, err = createTestingNS("kubectl", c)
-		Expect(err).NotTo(HaveOccurred())
-		ns = testingNs.Name
-	})
-
-	AfterEach(func() {
-		By(fmt.Sprintf("Destroying namespace for this suite %v", ns))
-		if err := deleteNS(c, ns, 5*time.Minute /* namespace deletion timeout */); err != nil {
-			Failf("Couldn't delete ns %s", err)
-		}
+		c = framework.Client
+		ns = framework.Namespace.Name
 	})
 
 	Describe("Update Demo", func() {
@@ -197,8 +187,7 @@ var _ = Describe("Kubectl client", func() {
 			}
 		})
 
-		// FIXME(ncdc) remove Skipped once we sort out the kubectl build issues in GCE
-		It("[Skipped] should support exec through an HTTP proxy", func() {
+		It("should support exec through an HTTP proxy", func() {
 			// Note: We are skipping local since we want to verify an apiserver with HTTPS.
 			// At this time local only supports plain HTTP.
 			SkipIfProviderIs("local")
@@ -206,33 +195,44 @@ var _ = Describe("Kubectl client", func() {
 			if testContext.Host == "" {
 				Failf("--host variable must be set to the full URI to the api server on e2e run.")
 			}
-			apiServer := testContext.Host
-			// If there is no api in URL try to add it
-			if !strings.Contains(apiServer, ":443/api") {
-				apiServer = apiServer + ":443/api"
-			}
 
-			// Get the kube/config
-			// TODO: Can it be RepoRoot with jenkins e2e?
-			testWorkspace := os.Getenv("WORKSPACE")
-			if testWorkspace == "" {
-				// Not running in jenkins, assume RepoRoot
-				testWorkspace = testContext.RepoRoot // os.Getenv("HOME")
+			// Make sure the apiServer is set to what kubectl requires
+			apiServer := testContext.Host
+			apiServerUrl, err := url.Parse(apiServer)
+			if err != nil {
+				Failf("Unable to parse URL %s. Error=%s", apiServer, err)
 			}
+			apiServerUrl.Scheme = "https"
+			apiServerUrl.Path = "/api"
+			if !strings.Contains(apiServer, ":443") {
+				apiServerUrl.Host = apiServerUrl.Host + ":443"
+			}
+			apiServer = apiServerUrl.String()
 
 			// Build the static kubectl
-			By("Building a static kubectl for upload")
-			kubectlContainerPath := path.Join(testWorkspace, "/examples/kubectl-container/")
-			staticKubectlBuild := exec.Command("make", "-C", kubectlContainerPath)
-			if out, err := staticKubectlBuild.Output(); err != nil {
-				Failf("Unable to create static kubectl. Error=%s, Output=%s", err, out)
-			}
-			// Verify the static kubectl path
-			testStaticKubectlPath := path.Join(kubectlContainerPath, "kubectl")
-			_, err := os.Stat(testStaticKubectlPath)
+			By("Finding a static kubectl for upload")
+			testStaticKubectlPath := path.Join(testContext.RepoRoot, "platforms/linux/386/kubectl")
+			_, err = os.Stat(testStaticKubectlPath)
 			if err != nil {
-				Failf("static kubectl path could not be accessed. Error=%s", err)
+				Logf("No kubectl in %s. Attempting a local build...", testStaticKubectlPath)
+				// Fall back to trying to build a local static kubectl
+				kubectlContainerPath := path.Join(testContext.RepoRoot, "/examples/kubectl-container/")
+				if _, err := os.Stat(path.Join(testContext.RepoRoot, "hack/build-go.sh")); err != nil {
+					Failf("Can't build static kubectl due to missing hack/build-go.sh. Error=%s", err)
+				}
+				By("Building a static kubectl for upload")
+				staticKubectlBuild := exec.Command("make", "-C", kubectlContainerPath)
+				if out, err := staticKubectlBuild.Output(); err != nil {
+					Failf("Unable to create static kubectl. Error=%s, Output=%q", err, out)
+				}
+				// Verify the static kubectl path
+				testStaticKubectlPath = path.Join(kubectlContainerPath, "kubectl")
+				_, err := os.Stat(testStaticKubectlPath)
+				if err != nil {
+					Failf("static kubectl path could not be found in %s. Error=%s", testStaticKubectlPath, err)
+				}
 			}
+			By(fmt.Sprintf("Using the kubectl in %s", testStaticKubectlPath))
 
 			// Verify the kubeconfig path
 			kubeConfigFilePath := testContext.KubeConfig
@@ -427,9 +427,6 @@ var _ = Describe("Kubectl client", func() {
 		It("should check if v1 is in available api versions [Conformance]", func() {
 			By("validating api verions")
 			output := runKubectl("api-versions")
-			if !strings.Contains(output, "Available Server Api Versions:") {
-				Failf("Missing caption in kubectl api-versions")
-			}
 			if !strings.Contains(output, "v1") {
 				Failf("No v1 in kubectl api-versions")
 			}

@@ -35,15 +35,17 @@ import (
 // DeploymentStorage includes dummy storage for Deployments and for Scale subresource.
 type DeploymentStorage struct {
 	Deployment *REST
+	Status     *StatusREST
 	Scale      *ScaleREST
 }
 
-func NewStorage(s storage.Interface) DeploymentStorage {
-	deploymentRest := NewREST(s)
+func NewStorage(s storage.Interface, storageFactory storage.StorageFactory) DeploymentStorage {
+	deploymentRest, deploymentStatusRest := NewREST(s, storageFactory)
 	deploymentRegistry := deployment.NewRegistry(deploymentRest)
 
 	return DeploymentStorage{
 		Deployment: deploymentRest,
+		Status:     deploymentStatusRest,
 		Scale:      &ScaleREST{registry: &deploymentRegistry},
 	}
 }
@@ -53,12 +55,17 @@ type REST struct {
 }
 
 // NewREST returns a RESTStorage object that will work against deployments.
-func NewREST(s storage.Interface) *REST {
+func NewREST(s storage.Interface, storageFactory storage.StorageFactory) (*REST, *StatusREST) {
 	prefix := "/deployments"
+
+	newListFunc := func() runtime.Object { return &extensions.DeploymentList{} }
+	storageInterface := storageFactory(
+		s, 100, nil, &extensions.Deployment{}, prefix, false, newListFunc)
+
 	store := &etcdgeneric.Etcd{
 		NewFunc: func() runtime.Object { return &extensions.Deployment{} },
 		// NewListFunc returns an object capable of storing results of an etcd list.
-		NewListFunc: func() runtime.Object { return &extensions.DeploymentList{} },
+		NewListFunc: newListFunc,
 		// Produces a path that etcd understands, to the root of the resource
 		// by combining the namespace in the context with the given prefix.
 		KeyRootFunc: func(ctx api.Context) string {
@@ -85,9 +92,25 @@ func NewREST(s storage.Interface) *REST {
 		// Used to validate deployment updates.
 		UpdateStrategy: deployment.Strategy,
 
-		Storage: s,
+		Storage: storageInterface,
 	}
-	return &REST{store}
+	statusStore := *store
+	statusStore.UpdateStrategy = deployment.StatusStrategy
+	return &REST{store}, &StatusREST{store: &statusStore}
+}
+
+// StatusREST implements the REST endpoint for changing the status of a deployment
+type StatusREST struct {
+	store *etcdgeneric.Etcd
+}
+
+func (r *StatusREST) New() runtime.Object {
+	return &extensions.Deployment{}
+}
+
+// Update alters the status subset of an object.
+func (r *StatusREST) Update(ctx api.Context, obj runtime.Object) (runtime.Object, bool, error) {
+	return r.store.Update(ctx, obj)
 }
 
 type ScaleREST struct {
