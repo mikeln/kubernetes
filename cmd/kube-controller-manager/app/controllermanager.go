@@ -35,7 +35,6 @@ import (
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
-	clientcmdapi "k8s.io/kubernetes/pkg/client/unversioned/clientcmd/api"
 	"k8s.io/kubernetes/pkg/cloudprovider"
 	"k8s.io/kubernetes/pkg/controller/daemon"
 	"k8s.io/kubernetes/pkg/controller/deployment"
@@ -118,12 +117,15 @@ func NewCMServer() *CMServer {
 		NodeSyncPeriod:                    10 * time.Second,
 		ResourceQuotaSyncPeriod:           10 * time.Second,
 		NamespaceSyncPeriod:               5 * time.Minute,
-		PVClaimBinderSyncPeriod:           10 * time.Second,
+		PVClaimBinderSyncPeriod:           10 * time.Minute,
 		HorizontalPodAutoscalerSyncPeriod: 30 * time.Second,
 		DeploymentControllerSyncPeriod:    30 * time.Second,
 		MinResyncPeriod:                   12 * time.Hour,
 		RegisterRetryCount:                10,
 		PodEvictionTimeout:                5 * time.Minute,
+		NodeMonitorGracePeriod:            40 * time.Second,
+		NodeStartupGracePeriod:            60 * time.Second,
+		NodeMonitorPeriod:                 5 * time.Second,
 		ClusterName:                       "kubernetes",
 		TerminatedPodGCThreshold:          12500,
 		VolumeConfigFlags: VolumeConfigFlags{
@@ -204,13 +206,13 @@ func (s *CMServer) AddFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&s.RegisterRetryCount, "register-retry-count", s.RegisterRetryCount, ""+
 		"The number of retries for initial node registration.  Retry interval equals node-sync-period.")
 	fs.MarkDeprecated("register-retry-count", "This flag is currently no-op and will be deleted.")
-	fs.DurationVar(&s.NodeMonitorGracePeriod, "node-monitor-grace-period", 40*time.Second,
+	fs.DurationVar(&s.NodeMonitorGracePeriod, "node-monitor-grace-period", s.NodeMonitorGracePeriod,
 		"Amount of time which we allow running Node to be unresponsive before marking it unhealty. "+
 			"Must be N times more than kubelet's nodeStatusUpdateFrequency, "+
 			"where N means number of retries allowed for kubelet to post node status.")
-	fs.DurationVar(&s.NodeStartupGracePeriod, "node-startup-grace-period", 60*time.Second,
+	fs.DurationVar(&s.NodeStartupGracePeriod, "node-startup-grace-period", s.NodeStartupGracePeriod,
 		"Amount of time which we allow starting Node to be unresponsive before marking it unhealty.")
-	fs.DurationVar(&s.NodeMonitorPeriod, "node-monitor-period", 5*time.Second,
+	fs.DurationVar(&s.NodeMonitorPeriod, "node-monitor-period", s.NodeMonitorPeriod,
 		"The period for syncing NodeStatus in NodeController.")
 	fs.StringVar(&s.ServiceAccountKeyFile, "service-account-private-key-file", s.ServiceAccountKeyFile, "Filename containing a PEM-encoded private RSA key used to sign service account tokens.")
 	fs.BoolVar(&s.EnableProfiling, "profiling", true, "Enable profiling via web interface host:port/debug/pprof/")
@@ -231,15 +233,7 @@ func (s *CMServer) ResyncPeriod() time.Duration {
 
 // Run runs the CMServer.  This should never exit.
 func (s *CMServer) Run(_ []string) error {
-	if s.Kubeconfig == "" && s.Master == "" {
-		glog.Warningf("Neither --kubeconfig nor --master was specified.  Using default API client.  This might not work.")
-	}
-
-	// This creates a client, first loading any specified kubeconfig
-	// file, and then overriding the Master flag, if non-empty.
-	kubeconfig, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		&clientcmd.ClientConfigLoadingRules{ExplicitPath: s.Kubeconfig},
-		&clientcmd.ConfigOverrides{ClusterInfo: clientcmdapi.Cluster{Server: s.Master}}).ClientConfig()
+	kubeconfig, err := clientcmd.BuildConfigFromFlags(s.Master, s.Kubeconfig)
 	if err != nil {
 		return err
 	}
@@ -306,6 +300,8 @@ func (s *CMServer) Run(_ []string) error {
 			routeController := routecontroller.New(routes, kubeClient, s.ClusterName, &s.ClusterCIDR)
 			routeController.Run(s.NodeSyncPeriod)
 		}
+	} else {
+		glog.Infof("allocate-node-cidrs set to %v, node controller not creating routes", s.AllocateNodeCIDRs)
 	}
 
 	resourcequotacontroller.NewResourceQuotaController(kubeClient).Run(s.ResourceQuotaSyncPeriod)
@@ -314,8 +310,11 @@ func (s *CMServer) Run(_ []string) error {
 	// important when we start apiserver and controller manager at the same time.
 	var versionStrings []string
 	err = wait.PollImmediate(time.Second, 10*time.Second, func() (bool, error) {
-		versionStrings, err = client.ServerAPIVersions(kubeconfig)
-		return err == nil, err
+		if versionStrings, err = client.ServerAPIVersions(kubeconfig); err == nil {
+			return true, nil
+		}
+		glog.Errorf("Failed to get api versions from server: %v", err)
+		return false, nil
 	})
 	if err != nil {
 		glog.Fatalf("Failed to get api versions from server: %v", err)
@@ -336,7 +335,7 @@ func (s *CMServer) Run(_ []string) error {
 		glog.Infof("Starting %s apis", groupVersion)
 		if containsResource(resources, "horizontalpodautoscalers") {
 			glog.Infof("Starting horizontal pod controller.")
-			metricsClient := metrics.NewHeapsterMetricsClient(kubeClient, metrics.DefaultHeapsterNamespace, metrics.DefaultHeapsterService)
+			metricsClient := metrics.NewHeapsterMetricsClient(kubeClient, metrics.DefaultHeapsterNamespace, metrics.DefaultHeapsterScheme, metrics.DefaultHeapsterService, metrics.DefaultHeapsterPort)
 			podautoscaler.NewHorizontalController(kubeClient, metricsClient).
 				Run(s.HorizontalPodAutoscalerSyncPeriod)
 		}

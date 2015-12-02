@@ -24,7 +24,7 @@ set -o pipefail
 # Sets DIR, INSTRUCTIONS
 function main() {
   # Parse arguments
-  if [[ "$#" -ne 2 ]]; then
+  if [[ "$#" -ne 2 && "$#" -ne 3 ]]; then
     usage
     exit 1
   fi
@@ -94,10 +94,10 @@ function main() {
   umask "${release_umask}"
 
   local -r github="https://github.com/kubernetes/kubernetes.git"
-  declare -r DIR="/tmp/kubernetes-${release_type}-release-${new_version}-$(date +%s)"
+  declare -r DIR=$(mktemp -d "/tmp/kubernetes-${release_type}-release-${new_version}-XXXXXXX")
 
   # Start a tmp file that will hold instructions for the user.
-  declare -r INSTRUCTIONS="/tmp/kubernetes-${release_type}-release-${new_version}-$(date +%s)-instructions"
+  declare -r INSTRUCTIONS=$(mktemp "/tmp/kubernetes-${release_type}-release-${new_version}-instructions-XXXXXXX")
   if $DRY_RUN; then
     cat > "${INSTRUCTIONS}" <<- EOM
 Success on dry run!  Do
@@ -111,7 +111,8 @@ You would now do the following, if not a dry run:
 EOM
   else
     cat > "${INSTRUCTIONS}" <<- EOM
-Success!  You must now do the following:
+Success!  You must now do the following (you may want to cut and paste these
+instructions elsewhere):
 
 EOM
   fi
@@ -147,8 +148,8 @@ EOM
     git-push ${release_branch}
   elif [[ "${release_type}" == 'official' ]]; then
     local -r release_branch="release-${version_major}.${version_minor}"
-    local -r beta_version="v${version_major}.${version_minor}.$((${version_patch}+1))-beta"
-    local -r ancestor="${new_version}-beta"
+    local -r beta_version="v${version_major}.${version_minor}.$((${version_patch}+1))-beta.0"
+    local -r ancestor="${new_version}-beta.0"
 
     git checkout "${release_branch}"
     verify-at-git-commit "${git_commit}"
@@ -161,7 +162,7 @@ EOM
   else # [[ "${release_type}" == 'series' ]]
     local -r release_branch="release-${version_major}.${version_minor}"
     local -r alpha_version="v${version_major}.$((${version_minor}+1)).0-alpha.0"
-    local -r beta_version="v${version_major}.${version_minor}.0-beta"
+    local -r beta_version="v${version_major}.${version_minor}.0-beta.0"
     # NOTE: We check the second alpha version, ...-alpha.1, because ...-alpha.0
     # is the branch point for the previous release cycle, so could provide a
     # false positive if we accidentally try to release off of the old release
@@ -214,15 +215,9 @@ function alpha-release() {
   git-push "${alpha_version}"
 
   cat >> "${INSTRUCTIONS}" <<- EOM
-- Finish the ${alpha_version} release build:
-  - From this directory (clone of upstream/master),
-      ./release/build-official-release.sh ${alpha_version}
-  - Prep release notes:
-    - Figure out what the PR numbers for this release and last release are, and
-      get an api-token from GitHub (https://github.com/settings/tokens).  From a
-      clone of kubernetes/contrib at upstream/master,
-        go run release-notes/release-notes.go --last-release-pr=<number> --current-release-pr=<number> --api-token=<token>
-      Feel free to prune.
+- Finish the ${alpha_version} release build: from this directory (clone of
+  upstream/master),
+    ./release/build-official-release.sh ${alpha_version}
 EOM
 }
 
@@ -237,12 +232,10 @@ function beta-release() {
   git tag -a -m "Kubernetes pre-release ${beta_version}" "${beta_version}"
   git-push "${beta_version}"
 
-  # NOTE: We currently don't publish beta release notes, since they'll go out
-  # with the official release, so we don't prompt for compiling them here.
   cat >> "${INSTRUCTIONS}" <<- EOM
-- Finish the ${beta_version} release build:
-  - From this directory (clone of upstream/master),
-      ./release/build-official-release.sh ${beta_version}
+- Finish the ${beta_version} release build: from this directory (clone of
+  upstream/master),
+    ./release/build-official-release.sh ${beta_version}
 EOM
 }
 
@@ -258,18 +251,9 @@ function official-release() {
   git-push "${official_version}"
 
   cat >> "${INSTRUCTIONS}" <<- EOM
-- Finish the ${official_version} release build:
-  - From this directory (clone of upstream/master),
-      ./release/build-official-release.sh ${official_version}
-  - Prep release notes:
-    - From this directory (clone of upstream/master), run
-        ./hack/cherry_pick_list.sh ${official_version}
-      to get the release notes for the patch release you just created. Feel
-      free to prune anything internal, but typically for patch releases we tend
-      to include everything in the release notes.
-    - If this is a first official release (vX.Y.0), scan through the release
-      notes for all of the alpha releases since the last cycle, and include
-      anything important in release notes.
+- Finish the ${official_version} release build: from this directory (clone of
+  upstream/master),
+    ./release/build-official-release.sh ${official_version}
 EOM
 }
 
@@ -340,10 +324,9 @@ function rev-version-and-commit() {
 function git-push() {
   local -r object="${1}"
   if $DRY_RUN; then
-    echo "Dry run: would have done git push ${object}"
+    echo "Dry run: would have done git push origin ${object}"
   else
-    echo "NOT A DRY RUN: you don't really want to git push ${object}, do you?"
-    # git push "${object}"
+    git push origin "${object}"
   fi
 }
 

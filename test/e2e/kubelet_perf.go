@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"time"
 
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/fields"
 	"k8s.io/kubernetes/pkg/labels"
@@ -61,7 +62,7 @@ func runResourceTrackingTest(framework *Framework, podsPerNode int, nodeNames se
 		Client:    framework.Client,
 		Name:      rcName,
 		Namespace: framework.Namespace.Name,
-		Image:     "beta.gcr.io/google_containers/pause:2.0",
+		Image:     "gcr.io/google_containers/pause:2.0",
 		Replicas:  totalPods,
 	})).NotTo(HaveOccurred())
 
@@ -104,7 +105,7 @@ var _ = Describe("Kubelet", func() {
 	var resourceMonitor *resourceMonitor
 
 	BeforeEach(func() {
-		nodes, err := framework.Client.Nodes().List(labels.Everything(), fields.Everything())
+		nodes, err := framework.Client.Nodes().List(labels.Everything(), fields.Everything(), unversioned.ListOptions{})
 		expectNoError(err)
 		nodeNames = sets.NewString()
 		for _, node := range nodes.Items {

@@ -19,8 +19,8 @@ If you are using a released version of Kubernetes, you should
 refer to the docs that go with that version.
 
 <strong>
-The latest 1.0.x release of this document can be found
-[here](http://releases.k8s.io/release-1.0/docs/user-guide/jobs.md).
+The latest release of this document can be found
+[here](http://releases.k8s.io/release-1.1/docs/user-guide/jobs.md).
 
 Documentation for other releases can be found at
 [releases.k8s.io](http://releases.k8s.io).
@@ -143,8 +143,8 @@ $ kubectl logs pi-aiw0a
 ## Writing a Job Spec
 
 As with all other Kubernetes config, a Job needs `apiVersion`, `kind`, and `metadata` fields.  For
-general information about working with config files, see [here](simple-yaml.md),
-[here](configuring-containers.md), and [here](working-with-resources.md).
+general information about working with config files, see [deploying applications](deploying-applications.md),
+[configuring containers](configuring-containers.md), and [working with resources](working-with-resources.md) documents.
 
 A Job also needs a [`.spec` section](../devel/api-conventions.md#spec-and-status).
 

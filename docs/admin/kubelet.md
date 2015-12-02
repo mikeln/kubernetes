@@ -19,8 +19,8 @@ If you are using a released version of Kubernetes, you should
 refer to the docs that go with that version.
 
 <strong>
-The latest 1.0.x release of this document can be found
-[here](http://releases.k8s.io/release-1.0/docs/admin/kubelet.md).
+The latest release of this document can be found
+[here](http://releases.k8s.io/release-1.1/docs/admin/kubelet.md).
 
 Documentation for other releases can be found at
 [releases.k8s.io](http://releases.k8s.io).
@@ -83,8 +83,9 @@ kubelet
       --docker-exec-handler="native": Handler to use when executing a command in a container. Valid values are 'native' and 'nsenter'. Defaults to 'native'.
       --enable-debugging-handlers[=true]: Enables server endpoints for log collection and local running of containers and commands
       --enable-server[=true]: Enable the Kubelet's server
-      --event-burst=0: Maximum size of a bursty event records, temporarily allows event records to burst to this number, while still not exceeding event-qps. Only used if --event-qps > 0
-      --event-qps=0: If > 0, limit event creations per second to this value. If 0, unlimited. [default=0.0]
+      --event-burst=10: Maximum size of a bursty event records, temporarily allows event records to burst to this number, while still not exceeding event-qps. Only used if --event-qps > 0
+      --event-qps=5: If > 0, limit event creations per second to this value. If 0, unlimited.
+      --experimental-flannel-overlay[=false]: Experimental support for starting the kubelet with the default overlay network (flannel). Assumes flanneld is already running in client mode. [default=false]
       --file-check-frequency=20s: Duration between checking config files for new data
       --google-json-key="": The Google Cloud Platform Service Account JSON Key to use for authentication.
       --healthz-bind-address=127.0.0.1: The IP address for the healthz server to serve on, defaulting to 127.0.0.1 (set to 0.0.0.0 for all interfaces)
@@ -111,10 +112,12 @@ kubelet
       --minimum-container-ttl-duration=1m0s: Minimum age for a finished container before it is garbage collected.  Examples: '300ms', '10s' or '2h45m'
       --network-plugin="": <Warning: Alpha feature> The name of the network plugin to be invoked for various events in kubelet/pod lifecycle
       --network-plugin-dir="/usr/libexec/kubernetes/kubelet-plugins/net/exec/": <Warning: Alpha feature> The full path of the directory in which to search for network plugins
+      --node-label=[]: add labels when registering the node in the cluster, the flag can be used multiple times (key=value)
+      --node-labels-file="": the path to a yaml or json file containing a series of key pair labels to apply on node registration
       --node-status-update-frequency=10s: Specifies how often kubelet posts node status to master. Note: be cautious when changing the constant, it must work with nodeMonitorGracePeriod in nodecontroller. Default: 10s
       --oom-score-adj=-999: The oom-score-adj value for kubelet process. Values must be within the range [-1000, 1000]
       --pod-cidr="": The CIDR to use for pod IP addresses, only used in standalone mode.  In cluster mode, this is obtained from the master.
-      --pod-infra-container-image="beta.gcr.io/google_containers/pause:2.0": The image whose network/ipc namespaces containers in each pod will use.
+      --pod-infra-container-image="gcr.io/google_containers/pause:2.0": The image whose network/ipc namespaces containers in each pod will use.
       --port=10250: The port for the Kubelet to serve on. Note that "kubectl logs" will not work if you set this flag.
       --read-only-port=10255: The read-only port for the Kubelet to serve on with no authentication/authorization (set to 0 to disable)
       --really-crash-for-testing[=false]: If true, when panics occur crash. Intended for testing.
@@ -122,7 +125,7 @@ kubelet
       --register-node[=true]: Register the node with the apiserver (defaults to true if --api-servers is set)
       --register-schedulable[=true]: Register the node as schedulable. No-op if register-node is false. [default=true]
       --registry-burst=10: Maximum size of a bursty pulls, temporarily allows pulls to burst to this number, while still not exceeding registry-qps.  Only used if --registry-qps > 0
-      --registry-qps=0: If > 0, limit registry pull QPS to this value.  If 0, unlimited. [default=0.0]
+      --registry-qps=5: If > 0, limit registry pull QPS to this value.  If 0, unlimited. [default=5.0]
       --resolv-conf="/etc/resolv.conf": Resolver configuration file used as the basis for the container DNS resolution configuration.
       --resource-container="/kubelet": Absolute name of the resource-only container to create and run the Kubelet in (Default: /kubelet).
       --rkt-path="": Path of rkt binary. Leave empty to use the first rkt in $PATH.  Only used if --container-runtime='rkt'
@@ -130,14 +133,14 @@ kubelet
       --root-dir="/var/lib/kubelet": Directory path for managing kubelet files (volume mounts,etc).
       --runonce[=false]: If true, exit after spawning pods from local manifests or remote urls. Exclusive with --api-servers, and --enable-server
       --serialize-image-pulls[=true]: Pull images one at a time. We recommend *not* changing the default value on nodes that run docker daemon with version < 1.9 or an Aufs storage backend. Issue #10959 has more details. [default=true]
-      --streaming-connection-idle-timeout=0: Maximum time a streaming connection can be idle before the connection is automatically closed.  Example: '5m'
-      --sync-frequency=10s: Max period between synchronizing running containers and config
+      --streaming-connection-idle-timeout=5m0s: Maximum time a streaming connection can be idle before the connection is automatically closed.  Example: '5m'
+      --sync-frequency=1m0s: Max period between synchronizing running containers and config
       --system-container="": Optional resource-only container in which to place all non-kernel processes that are not already in a container. Empty for no container. Rolling back the flag requires a reboot. (Default: "").
       --tls-cert-file="": File containing x509 Certificate for HTTPS.  (CA cert, if any, concatenated after server cert). If --tls-cert-file and --tls-private-key-file are not provided, a self-signed certificate and key are generated for the public address and saved to the directory passed to --cert-dir.
       --tls-private-key-file="": File containing x509 private key matching --tls-cert-file.
 ```
 
-###### Auto generated by spf13/cobra on 3-Nov-2015
+###### Auto generated by spf13/cobra on 24-Nov-2015
 
 
 <!-- BEGIN MUNGE: GENERATED_ANALYTICS -->

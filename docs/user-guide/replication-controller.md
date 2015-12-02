@@ -19,8 +19,8 @@ If you are using a released version of Kubernetes, you should
 refer to the docs that go with that version.
 
 <strong>
-The latest 1.0.x release of this document can be found
-[here](http://releases.k8s.io/release-1.0/docs/user-guide/replication-controller.md).
+The latest release of this document can be found
+[here](http://releases.k8s.io/release-1.1/docs/user-guide/replication-controller.md).
 
 Documentation for other releases can be found at
 [releases.k8s.io](http://releases.k8s.io).
@@ -124,7 +124,7 @@ For instance, a service might target all pods with `tier in (frontend), environm
 
 Replication controller is a top-level resource in the kubernetes REST API. More details about the
 API object can be found at: [ReplicationController API
-object](https://htmlpreview.github.io/?https://github.com/kubernetes/kubernetes/HEAD/docs/api-reference/v1/definitions.html#_v1_replicationcontroller).
+object](https://htmlpreview.github.io/?https://github.com/kubernetes/kubernetes/blob/HEAD/docs/api-reference/v1/definitions.html#_v1_replicationcontroller).
 
 
 <!-- BEGIN MUNGE: GENERATED_ANALYTICS -->

@@ -25,7 +25,7 @@ import (
 	resource "k8s.io/kubernetes/pkg/api/resource"
 	unversioned "k8s.io/kubernetes/pkg/api/unversioned"
 	conversion "k8s.io/kubernetes/pkg/conversion"
-	util "k8s.io/kubernetes/pkg/util"
+	intstr "k8s.io/kubernetes/pkg/util/intstr"
 	inf "speter.net/go/exp/math/dec/inf"
 )
 
@@ -290,6 +290,7 @@ func deepCopy_api_GCEPersistentDiskVolumeSource(in api.GCEPersistentDiskVolumeSo
 func deepCopy_api_GitRepoVolumeSource(in api.GitRepoVolumeSource, out *api.GitRepoVolumeSource, c *conversion.Cloner) error {
 	out.Repository = in.Repository
 	out.Revision = in.Revision
+	out.Directory = in.Directory
 	return nil
 }
 
@@ -302,7 +303,7 @@ func deepCopy_api_GlusterfsVolumeSource(in api.GlusterfsVolumeSource, out *api.G
 
 func deepCopy_api_HTTPGetAction(in api.HTTPGetAction, out *api.HTTPGetAction, c *conversion.Cloner) error {
 	out.Path = in.Path
-	if err := deepCopy_util_IntOrString(in.Port, &out.Port, c); err != nil {
+	if err := deepCopy_intstr_IntOrString(in.Port, &out.Port, c); err != nil {
 		return err
 	}
 	out.Host = in.Host
@@ -583,6 +584,9 @@ func deepCopy_api_Probe(in api.Probe, out *api.Probe, c *conversion.Cloner) erro
 	}
 	out.InitialDelaySeconds = in.InitialDelaySeconds
 	out.TimeoutSeconds = in.TimeoutSeconds
+	out.PeriodSeconds = in.PeriodSeconds
+	out.SuccessThreshold = in.SuccessThreshold
+	out.FailureThreshold = in.FailureThreshold
 	return nil
 }
 
@@ -692,7 +696,7 @@ func deepCopy_api_SecurityContext(in api.SecurityContext, out *api.SecurityConte
 }
 
 func deepCopy_api_TCPSocketAction(in api.TCPSocketAction, out *api.TCPSocketAction, c *conversion.Cloner) error {
-	if err := deepCopy_util_IntOrString(in.Port, &out.Port, c); err != nil {
+	if err := deepCopy_intstr_IntOrString(in.Port, &out.Port, c); err != nil {
 		return err
 	}
 	return nil
@@ -978,9 +982,9 @@ func deepCopy_extensions_DaemonSetList(in DaemonSetList, out *DaemonSetList, c *
 
 func deepCopy_extensions_DaemonSetSpec(in DaemonSetSpec, out *DaemonSetSpec, c *conversion.Cloner) error {
 	if in.Selector != nil {
-		out.Selector = make(map[string]string)
-		for key, val := range in.Selector {
-			out.Selector[key] = val
+		out.Selector = new(PodSelector)
+		if err := deepCopy_extensions_PodSelector(*in.Selector, out.Selector, c); err != nil {
+			return err
 		}
 	} else {
 		out.Selector = nil
@@ -1202,7 +1206,7 @@ func deepCopy_extensions_Ingress(in Ingress, out *Ingress, c *conversion.Cloner)
 
 func deepCopy_extensions_IngressBackend(in IngressBackend, out *IngressBackend, c *conversion.Cloner) error {
 	out.ServiceName = in.ServiceName
-	if err := deepCopy_util_IntOrString(in.ServicePort, &out.ServicePort, c); err != nil {
+	if err := deepCopy_intstr_IntOrString(in.ServicePort, &out.ServicePort, c); err != nil {
 		return err
 	}
 	return nil
@@ -1437,10 +1441,10 @@ func deepCopy_extensions_ReplicationControllerDummy(in ReplicationControllerDumm
 }
 
 func deepCopy_extensions_RollingUpdateDeployment(in RollingUpdateDeployment, out *RollingUpdateDeployment, c *conversion.Cloner) error {
-	if err := deepCopy_util_IntOrString(in.MaxUnavailable, &out.MaxUnavailable, c); err != nil {
+	if err := deepCopy_intstr_IntOrString(in.MaxUnavailable, &out.MaxUnavailable, c); err != nil {
 		return err
 	}
-	if err := deepCopy_util_IntOrString(in.MaxSurge, &out.MaxSurge, c); err != nil {
+	if err := deepCopy_intstr_IntOrString(in.MaxSurge, &out.MaxSurge, c); err != nil {
 		return err
 	}
 	out.MinReadySeconds = in.MinReadySeconds
@@ -1568,8 +1572,8 @@ func deepCopy_extensions_ThirdPartyResourceList(in ThirdPartyResourceList, out *
 	return nil
 }
 
-func deepCopy_util_IntOrString(in util.IntOrString, out *util.IntOrString, c *conversion.Cloner) error {
-	out.Kind = in.Kind
+func deepCopy_intstr_IntOrString(in intstr.IntOrString, out *intstr.IntOrString, c *conversion.Cloner) error {
+	out.Type = in.Type
 	out.IntVal = in.IntVal
 	out.StrVal = in.StrVal
 	return nil
@@ -1668,7 +1672,7 @@ func init() {
 		deepCopy_extensions_ThirdPartyResourceData,
 		deepCopy_extensions_ThirdPartyResourceDataList,
 		deepCopy_extensions_ThirdPartyResourceList,
-		deepCopy_util_IntOrString,
+		deepCopy_intstr_IntOrString,
 	)
 	if err != nil {
 		// if one of the deep copy functions is malformed, detect it immediately.

@@ -23,8 +23,7 @@ import (
 
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/apis/extensions"
-	"k8s.io/kubernetes/pkg/util"
-	errors "k8s.io/kubernetes/pkg/util/fielderrors"
+	"k8s.io/kubernetes/pkg/util/intstr"
 )
 
 func TestValidateHorizontalPodAutoscaler(t *testing.T) {
@@ -369,14 +368,14 @@ func TestValidateDaemonSetUpdate(t *testing.T) {
 			old: extensions.DaemonSet{
 				ObjectMeta: api.ObjectMeta{Name: "abc", Namespace: api.NamespaceDefault},
 				Spec: extensions.DaemonSetSpec{
-					Selector: validSelector,
+					Selector: &extensions.PodSelector{MatchLabels: validSelector},
 					Template: &validPodTemplateAbc.Template,
 				},
 			},
 			update: extensions.DaemonSet{
 				ObjectMeta: api.ObjectMeta{Name: "abc", Namespace: api.NamespaceDefault},
 				Spec: extensions.DaemonSetSpec{
-					Selector: validSelector,
+					Selector: &extensions.PodSelector{MatchLabels: validSelector},
 					Template: &validPodTemplateAbc.Template,
 				},
 			},
@@ -385,14 +384,14 @@ func TestValidateDaemonSetUpdate(t *testing.T) {
 			old: extensions.DaemonSet{
 				ObjectMeta: api.ObjectMeta{Name: "abc", Namespace: api.NamespaceDefault},
 				Spec: extensions.DaemonSetSpec{
-					Selector: validSelector,
+					Selector: &extensions.PodSelector{MatchLabels: validSelector},
 					Template: &validPodTemplateAbc.Template,
 				},
 			},
 			update: extensions.DaemonSet{
 				ObjectMeta: api.ObjectMeta{Name: "abc", Namespace: api.NamespaceDefault},
 				Spec: extensions.DaemonSetSpec{
-					Selector: validSelector2,
+					Selector: &extensions.PodSelector{MatchLabels: validSelector2},
 					Template: &validPodTemplateAbc2.Template,
 				},
 			},
@@ -401,14 +400,14 @@ func TestValidateDaemonSetUpdate(t *testing.T) {
 			old: extensions.DaemonSet{
 				ObjectMeta: api.ObjectMeta{Name: "abc", Namespace: api.NamespaceDefault},
 				Spec: extensions.DaemonSetSpec{
-					Selector: validSelector,
+					Selector: &extensions.PodSelector{MatchLabels: validSelector},
 					Template: &validPodTemplateAbc.Template,
 				},
 			},
 			update: extensions.DaemonSet{
 				ObjectMeta: api.ObjectMeta{Name: "abc", Namespace: api.NamespaceDefault},
 				Spec: extensions.DaemonSetSpec{
-					Selector: validSelector,
+					Selector: &extensions.PodSelector{MatchLabels: validSelector},
 					Template: &validPodTemplateNodeSelector.Template,
 				},
 			},
@@ -417,7 +416,7 @@ func TestValidateDaemonSetUpdate(t *testing.T) {
 	for _, successCase := range successCases {
 		successCase.old.ObjectMeta.ResourceVersion = "1"
 		successCase.update.ObjectMeta.ResourceVersion = "1"
-		if errs := ValidateDaemonSetUpdate(&successCase.old, &successCase.update); len(errs) != 0 {
+		if errs := ValidateDaemonSetUpdate(&successCase.update, &successCase.old); len(errs) != 0 {
 			t.Errorf("expected success: %v", errs)
 		}
 	}
@@ -426,14 +425,14 @@ func TestValidateDaemonSetUpdate(t *testing.T) {
 			old: extensions.DaemonSet{
 				ObjectMeta: api.ObjectMeta{Name: "", Namespace: api.NamespaceDefault},
 				Spec: extensions.DaemonSetSpec{
-					Selector: validSelector,
+					Selector: &extensions.PodSelector{MatchLabels: validSelector},
 					Template: &validPodTemplateAbc.Template,
 				},
 			},
 			update: extensions.DaemonSet{
 				ObjectMeta: api.ObjectMeta{Name: "abc", Namespace: api.NamespaceDefault},
 				Spec: extensions.DaemonSetSpec{
-					Selector: validSelector,
+					Selector: &extensions.PodSelector{MatchLabels: validSelector},
 					Template: &validPodTemplateAbc.Template,
 				},
 			},
@@ -442,14 +441,14 @@ func TestValidateDaemonSetUpdate(t *testing.T) {
 			old: extensions.DaemonSet{
 				ObjectMeta: api.ObjectMeta{Name: "", Namespace: api.NamespaceDefault},
 				Spec: extensions.DaemonSetSpec{
-					Selector: validSelector,
+					Selector: &extensions.PodSelector{MatchLabels: validSelector},
 					Template: &validPodTemplateAbc.Template,
 				},
 			},
 			update: extensions.DaemonSet{
 				ObjectMeta: api.ObjectMeta{Name: "abc", Namespace: api.NamespaceDefault},
 				Spec: extensions.DaemonSetSpec{
-					Selector: invalidSelector,
+					Selector: &extensions.PodSelector{MatchLabels: invalidSelector},
 					Template: &validPodTemplateAbc.Template,
 				},
 			},
@@ -458,14 +457,14 @@ func TestValidateDaemonSetUpdate(t *testing.T) {
 			old: extensions.DaemonSet{
 				ObjectMeta: api.ObjectMeta{Name: "", Namespace: api.NamespaceDefault},
 				Spec: extensions.DaemonSetSpec{
-					Selector: validSelector,
+					Selector: &extensions.PodSelector{MatchLabels: validSelector},
 					Template: &validPodTemplateAbc.Template,
 				},
 			},
 			update: extensions.DaemonSet{
 				ObjectMeta: api.ObjectMeta{Name: "abc", Namespace: api.NamespaceDefault},
 				Spec: extensions.DaemonSetSpec{
-					Selector: validSelector,
+					Selector: &extensions.PodSelector{MatchLabels: validSelector},
 					Template: &invalidPodTemplate.Template,
 				},
 			},
@@ -474,14 +473,14 @@ func TestValidateDaemonSetUpdate(t *testing.T) {
 			old: extensions.DaemonSet{
 				ObjectMeta: api.ObjectMeta{Name: "", Namespace: api.NamespaceDefault},
 				Spec: extensions.DaemonSetSpec{
-					Selector: validSelector,
+					Selector: &extensions.PodSelector{MatchLabels: validSelector},
 					Template: &validPodTemplateAbc.Template,
 				},
 			},
 			update: extensions.DaemonSet{
 				ObjectMeta: api.ObjectMeta{Name: "abc", Namespace: api.NamespaceDefault},
 				Spec: extensions.DaemonSetSpec{
-					Selector: validSelector,
+					Selector: &extensions.PodSelector{MatchLabels: validSelector},
 					Template: &validPodTemplateDef.Template,
 				},
 			},
@@ -490,21 +489,21 @@ func TestValidateDaemonSetUpdate(t *testing.T) {
 			old: extensions.DaemonSet{
 				ObjectMeta: api.ObjectMeta{Name: "", Namespace: api.NamespaceDefault},
 				Spec: extensions.DaemonSetSpec{
-					Selector: validSelector,
+					Selector: &extensions.PodSelector{MatchLabels: validSelector},
 					Template: &validPodTemplateAbc.Template,
 				},
 			},
 			update: extensions.DaemonSet{
 				ObjectMeta: api.ObjectMeta{Name: "abc", Namespace: api.NamespaceDefault},
 				Spec: extensions.DaemonSetSpec{
-					Selector: validSelector,
+					Selector: &extensions.PodSelector{MatchLabels: validSelector},
 					Template: &readWriteVolumePodTemplate.Template,
 				},
 			},
 		},
 	}
 	for testName, errorCase := range errorCases {
-		if errs := ValidateDaemonSetUpdate(&errorCase.old, &errorCase.update); len(errs) == 0 {
+		if errs := ValidateDaemonSetUpdate(&errorCase.update, &errorCase.old); len(errs) == 0 {
 			t.Errorf("expected failure: %s", testName)
 		}
 	}
@@ -540,14 +539,14 @@ func TestValidateDaemonSet(t *testing.T) {
 		{
 			ObjectMeta: api.ObjectMeta{Name: "abc", Namespace: api.NamespaceDefault},
 			Spec: extensions.DaemonSetSpec{
-				Selector: validSelector,
+				Selector: &extensions.PodSelector{MatchLabels: validSelector},
 				Template: &validPodTemplate.Template,
 			},
 		},
 		{
 			ObjectMeta: api.ObjectMeta{Name: "abc-123", Namespace: api.NamespaceDefault},
 			Spec: extensions.DaemonSetSpec{
-				Selector: validSelector,
+				Selector: &extensions.PodSelector{MatchLabels: validSelector},
 				Template: &validPodTemplate.Template,
 			},
 		},
@@ -562,14 +561,14 @@ func TestValidateDaemonSet(t *testing.T) {
 		"zero-length ID": {
 			ObjectMeta: api.ObjectMeta{Name: "", Namespace: api.NamespaceDefault},
 			Spec: extensions.DaemonSetSpec{
-				Selector: validSelector,
+				Selector: &extensions.PodSelector{MatchLabels: validSelector},
 				Template: &validPodTemplate.Template,
 			},
 		},
 		"missing-namespace": {
 			ObjectMeta: api.ObjectMeta{Name: "abc-123"},
 			Spec: extensions.DaemonSetSpec{
-				Selector: validSelector,
+				Selector: &extensions.PodSelector{MatchLabels: validSelector},
 				Template: &validPodTemplate.Template,
 			},
 		},
@@ -582,14 +581,14 @@ func TestValidateDaemonSet(t *testing.T) {
 		"selector_doesnt_match": {
 			ObjectMeta: api.ObjectMeta{Name: "abc", Namespace: api.NamespaceDefault},
 			Spec: extensions.DaemonSetSpec{
-				Selector: map[string]string{"foo": "bar"},
+				Selector: &extensions.PodSelector{MatchLabels: map[string]string{"foo": "bar"}},
 				Template: &validPodTemplate.Template,
 			},
 		},
 		"invalid manifest": {
 			ObjectMeta: api.ObjectMeta{Name: "abc", Namespace: api.NamespaceDefault},
 			Spec: extensions.DaemonSetSpec{
-				Selector: validSelector,
+				Selector: &extensions.PodSelector{MatchLabels: validSelector},
 			},
 		},
 		"invalid_label": {
@@ -601,7 +600,7 @@ func TestValidateDaemonSet(t *testing.T) {
 				},
 			},
 			Spec: extensions.DaemonSetSpec{
-				Selector: validSelector,
+				Selector: &extensions.PodSelector{MatchLabels: validSelector},
 				Template: &validPodTemplate.Template,
 			},
 		},
@@ -626,7 +625,7 @@ func TestValidateDaemonSet(t *testing.T) {
 				},
 			},
 			Spec: extensions.DaemonSetSpec{
-				Selector: validSelector,
+				Selector: &extensions.PodSelector{MatchLabels: validSelector},
 				Template: &validPodTemplate.Template,
 			},
 		},
@@ -636,7 +635,7 @@ func TestValidateDaemonSet(t *testing.T) {
 				Namespace: api.NamespaceDefault,
 			},
 			Spec: extensions.DaemonSetSpec{
-				Selector: validSelector,
+				Selector: &extensions.PodSelector{MatchLabels: validSelector},
 				Template: &api.PodTemplateSpec{
 					Spec: api.PodSpec{
 						RestartPolicy: api.RestartPolicyOnFailure,
@@ -655,7 +654,7 @@ func TestValidateDaemonSet(t *testing.T) {
 				Namespace: api.NamespaceDefault,
 			},
 			Spec: extensions.DaemonSetSpec{
-				Selector: validSelector,
+				Selector: &extensions.PodSelector{MatchLabels: validSelector},
 				Template: &api.PodTemplateSpec{
 					Spec: api.PodSpec{
 						RestartPolicy: api.RestartPolicyNever,
@@ -675,7 +674,7 @@ func TestValidateDaemonSet(t *testing.T) {
 			t.Errorf("expected failure for %s", k)
 		}
 		for i := range errs {
-			field := errs[i].(*errors.ValidationError).Field
+			field := errs[i].Field
 			if !strings.HasPrefix(field, "spec.template.") &&
 				field != "metadata.name" &&
 				field != "metadata.namespace" &&
@@ -772,7 +771,7 @@ func TestValidateDeployment(t *testing.T) {
 	invalidMaxSurgeDeployment.Spec.Strategy = extensions.DeploymentStrategy{
 		Type: extensions.RollingUpdateDeploymentStrategyType,
 		RollingUpdate: &extensions.RollingUpdateDeployment{
-			MaxSurge: util.NewIntOrStringFromString("20Percent"),
+			MaxSurge: intstr.FromString("20Percent"),
 		},
 	}
 	errorCases["value should be int(5) or percentage(5%)"] = invalidMaxSurgeDeployment
@@ -782,8 +781,8 @@ func TestValidateDeployment(t *testing.T) {
 	invalidRollingUpdateDeployment.Spec.Strategy = extensions.DeploymentStrategy{
 		Type: extensions.RollingUpdateDeploymentStrategyType,
 		RollingUpdate: &extensions.RollingUpdateDeployment{
-			MaxSurge:       util.NewIntOrStringFromString("0%"),
-			MaxUnavailable: util.NewIntOrStringFromInt(0),
+			MaxSurge:       intstr.FromString("0%"),
+			MaxUnavailable: intstr.FromInt(0),
 		},
 	}
 	errorCases["cannot be 0 when maxSurge is 0 as well"] = invalidRollingUpdateDeployment
@@ -793,7 +792,7 @@ func TestValidateDeployment(t *testing.T) {
 	invalidMaxUnavailableDeployment.Spec.Strategy = extensions.DeploymentStrategy{
 		Type: extensions.RollingUpdateDeploymentStrategyType,
 		RollingUpdate: &extensions.RollingUpdateDeployment{
-			MaxUnavailable: util.NewIntOrStringFromString("110%"),
+			MaxUnavailable: intstr.FromString("110%"),
 		},
 	}
 	errorCases["should not be more than 100%"] = invalidMaxUnavailableDeployment
@@ -918,9 +917,9 @@ func TestValidateJob(t *testing.T) {
 			t.Errorf("expected failure for %s", k)
 		} else {
 			s := strings.Split(k, ":")
-			err := errs[0].(*errors.ValidationError)
+			err := errs[0]
 			if err.Field != s[0] || !strings.Contains(err.Error(), s[1]) {
-				t.Errorf("unexpected error: %v, expected: %s", errs[0], k)
+				t.Errorf("unexpected error: %v, expected: %s", err, k)
 			}
 		}
 	}
@@ -931,7 +930,7 @@ type ingressRules map[string]string
 func TestValidateIngress(t *testing.T) {
 	defaultBackend := extensions.IngressBackend{
 		ServiceName: "default-backend",
-		ServicePort: util.IntOrString{Kind: util.IntstrInt, IntVal: 80},
+		ServicePort: intstr.FromInt(80),
 	}
 
 	newValid := func() extensions.Ingress {
@@ -943,7 +942,7 @@ func TestValidateIngress(t *testing.T) {
 			Spec: extensions.IngressSpec{
 				Backend: &extensions.IngressBackend{
 					ServiceName: "default-backend",
-					ServicePort: util.IntOrString{Kind: util.IntstrInt, IntVal: 80},
+					ServicePort: intstr.FromInt(80),
 				},
 				Rules: []extensions.IngressRule{
 					{
@@ -1019,9 +1018,9 @@ func TestValidateIngress(t *testing.T) {
 			t.Errorf("expected failure for %s", k)
 		} else {
 			s := strings.Split(k, ":")
-			err := errs[0].(*errors.ValidationError)
+			err := errs[0]
 			if err.Field != s[0] || !strings.Contains(err.Error(), s[1]) {
-				t.Errorf("unexpected error: %v, expected: %s", errs[0], k)
+				t.Errorf("unexpected error: %v, expected: %s", err, k)
 			}
 		}
 	}
@@ -1030,7 +1029,7 @@ func TestValidateIngress(t *testing.T) {
 func TestValidateIngressStatusUpdate(t *testing.T) {
 	defaultBackend := extensions.IngressBackend{
 		ServiceName: "default-backend",
-		ServicePort: util.IntOrString{Kind: util.IntstrInt, IntVal: 80},
+		ServicePort: intstr.FromInt(80),
 	}
 
 	newValid := func() extensions.Ingress {
@@ -1043,7 +1042,7 @@ func TestValidateIngressStatusUpdate(t *testing.T) {
 			Spec: extensions.IngressSpec{
 				Backend: &extensions.IngressBackend{
 					ServiceName: "default-backend",
-					ServicePort: util.IntOrString{Kind: util.IntstrInt, IntVal: 80},
+					ServicePort: intstr.FromInt(80),
 				},
 				Rules: []extensions.IngressRule{
 					{
@@ -1111,9 +1110,9 @@ func TestValidateIngressStatusUpdate(t *testing.T) {
 			t.Errorf("expected failure for %s", k)
 		} else {
 			s := strings.Split(k, ":")
-			err := errs[0].(*errors.ValidationError)
+			err := errs[0]
 			if err.Field != s[0] || !strings.Contains(err.Error(), s[1]) {
-				t.Errorf("unexpected error: %v, expected: %s", errs[0], k)
+				t.Errorf("unexpected error: %v, expected: %s", err, k)
 			}
 		}
 	}
@@ -1229,6 +1228,70 @@ func TestValidateClusterAutoscaler(t *testing.T) {
 			t.Errorf("expected failure for %s", k)
 		} else if !strings.Contains(errs[0].Error(), k) {
 			t.Errorf("unexpected error: %v, expected: %s", errs[0], k)
+		}
+	}
+}
+
+func TestValidateScale(t *testing.T) {
+	successCases := []extensions.Scale{
+		{
+			ObjectMeta: api.ObjectMeta{
+				Name:      "frontend",
+				Namespace: api.NamespaceDefault,
+			},
+			Spec: extensions.ScaleSpec{
+				Replicas: 1,
+			},
+		},
+		{
+			ObjectMeta: api.ObjectMeta{
+				Name:      "frontend",
+				Namespace: api.NamespaceDefault,
+			},
+			Spec: extensions.ScaleSpec{
+				Replicas: 10,
+			},
+		},
+		{
+			ObjectMeta: api.ObjectMeta{
+				Name:      "frontend",
+				Namespace: api.NamespaceDefault,
+			},
+			Spec: extensions.ScaleSpec{
+				Replicas: 0,
+			},
+		},
+	}
+
+	for _, successCase := range successCases {
+		if errs := ValidateScale(&successCase); len(errs) != 0 {
+			t.Errorf("expected success: %v", errs)
+		}
+	}
+
+	errorCases := []struct {
+		scale extensions.Scale
+		msg   string
+	}{
+		{
+			scale: extensions.Scale{
+				ObjectMeta: api.ObjectMeta{
+					Name:      "frontend",
+					Namespace: api.NamespaceDefault,
+				},
+				Spec: extensions.ScaleSpec{
+					Replicas: -1,
+				},
+			},
+			msg: "must be non-negative",
+		},
+	}
+
+	for _, c := range errorCases {
+		if errs := ValidateScale(&c.scale); len(errs) == 0 {
+			t.Errorf("expected failure for %s", c.msg)
+		} else if !strings.Contains(errs[0].Error(), c.msg) {
+			t.Errorf("unexpected error: %v, expected: %s", errs[0], c.msg)
 		}
 	}
 }

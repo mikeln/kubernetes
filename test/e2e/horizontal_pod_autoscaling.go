@@ -26,36 +26,59 @@ import (
 )
 
 const (
-	kind             = "replicationController"
+	kindRC           = "replicationController"
+	kindDeployment   = "deployment"
 	subresource      = "scale"
 	stabilityTimeout = 10 * time.Minute
 )
 
-var _ = Describe("Horizontal pod autoscaling", func() {
+var _ = Describe("Horizontal pod autoscaling (scale resource: CPU) [Skipped]", func() {
 	var rc *ResourceConsumer
 	f := NewFramework("horizontal-pod-autoscaling")
 
-	// CPU tests
-	It("[Skipped][Autoscaling Suite] should scale from 1 pod to 3 pods and from 3 to 5 (scale resource: CPU)", func() {
-		rc = NewDynamicResourceConsumer("rc", 1, 250, 0, 500, 100, f)
-		defer rc.CleanUp()
-		createCPUHorizontalPodAutoscaler(rc, 20)
-		rc.WaitForReplicas(3)
-		rc.EnsureDesiredReplicas(3, stabilityTimeout)
-		rc.ConsumeCPU(700)
-		rc.WaitForReplicas(5)
+	titleUp := "Should scale from 1 pod to 3 pods and from 3 to 5"
+	titleDown := "Should scale from 5 pods to 3 pods and from 3 to 1"
+
+	Describe("Deployment", func() {
+		// CPU tests via deployments
+		It(titleUp, func() {
+			scaleUp("deployment", kindDeployment, rc, f)
+		})
+		It(titleDown, func() {
+			scaleDown("deployment", kindDeployment, rc, f)
+		})
 	})
 
-	It("[Skipped][Autoscaling Suite] should scale from 5 pods to 3 pods and from 3 to 1 (scale resource: CPU)", func() {
-		rc = NewDynamicResourceConsumer("rc", 5, 400, 0, 500, 100, f)
-		defer rc.CleanUp()
-		createCPUHorizontalPodAutoscaler(rc, 30)
-		rc.WaitForReplicas(3)
-		rc.EnsureDesiredReplicas(3, stabilityTimeout)
-		rc.ConsumeCPU(100)
-		rc.WaitForReplicas(1)
+	Describe("[Autoscaling] ReplicationController", func() {
+		// CPU tests via replication controllers
+		It(titleUp, func() {
+			scaleUp("rc", kindRC, rc, f)
+		})
+		It(titleDown, func() {
+			scaleDown("rc", kindRC, rc, f)
+		})
 	})
 })
+
+func scaleUp(name, kind string, rc *ResourceConsumer, f *Framework) {
+	rc = NewDynamicResourceConsumer(name, kind, 1, 250, 0, 500, 100, f)
+	defer rc.CleanUp()
+	createCPUHorizontalPodAutoscaler(rc, 20)
+	rc.WaitForReplicas(3)
+	rc.EnsureDesiredReplicas(3, stabilityTimeout)
+	rc.ConsumeCPU(700)
+	rc.WaitForReplicas(5)
+}
+
+func scaleDown(name, kind string, rc *ResourceConsumer, f *Framework) {
+	rc = NewDynamicResourceConsumer(name, kind, 5, 400, 0, 500, 100, f)
+	defer rc.CleanUp()
+	createCPUHorizontalPodAutoscaler(rc, 30)
+	rc.WaitForReplicas(3)
+	rc.EnsureDesiredReplicas(3, stabilityTimeout)
+	rc.ConsumeCPU(100)
+	rc.WaitForReplicas(1)
+}
 
 func createCPUHorizontalPodAutoscaler(rc *ResourceConsumer, cpu int) {
 	minReplicas := 1
@@ -66,7 +89,7 @@ func createCPUHorizontalPodAutoscaler(rc *ResourceConsumer, cpu int) {
 		},
 		Spec: extensions.HorizontalPodAutoscalerSpec{
 			ScaleRef: extensions.SubresourceReference{
-				Kind:        kind,
+				Kind:        rc.kind,
 				Name:        rc.name,
 				Subresource: subresource,
 			},

@@ -29,6 +29,7 @@ import (
 
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/testapi"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/client/unversioned/fake"
 )
@@ -83,7 +84,7 @@ func TestPodAndContainerAttach(t *testing.T) {
 		f, tf, codec := NewAPIFactory()
 		tf.Client = &fake.RESTClient{
 			Codec:  codec,
-			Client: fake.HTTPClientFunc(func(req *http.Request) (*http.Response, error) { return nil, nil }),
+			Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) { return nil, nil }),
 		}
 		tf.Namespace = "test"
 		tf.ClientConfig = &client.Config{}
@@ -136,7 +137,7 @@ func TestAttach(t *testing.T) {
 		f, tf, codec := NewAPIFactory()
 		tf.Client = &fake.RESTClient{
 			Codec: codec,
-			Client: fake.HTTPClientFunc(func(req *http.Request) (*http.Response, error) {
+			Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 				switch p, m := req.URL.Path, req.Method; {
 				case p == test.podPath && m == "GET":
 					body := objBody(codec, test.pod)
@@ -149,7 +150,7 @@ func TestAttach(t *testing.T) {
 			}),
 		}
 		tf.Namespace = "test"
-		tf.ClientConfig = &client.Config{Version: test.version}
+		tf.ClientConfig = &client.Config{GroupVersion: &unversioned.GroupVersion{Version: test.version}}
 		bufOut := bytes.NewBuffer([]byte{})
 		bufErr := bytes.NewBuffer([]byte{})
 		bufIn := bytes.NewBuffer([]byte{})
@@ -214,7 +215,7 @@ func TestAttachWarnings(t *testing.T) {
 		f, tf, codec := NewAPIFactory()
 		tf.Client = &fake.RESTClient{
 			Codec: codec,
-			Client: fake.HTTPClientFunc(func(req *http.Request) (*http.Response, error) {
+			Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 				switch p, m := req.URL.Path, req.Method; {
 				case p == test.podPath && m == "GET":
 					body := objBody(codec, test.pod)
@@ -226,7 +227,7 @@ func TestAttachWarnings(t *testing.T) {
 			}),
 		}
 		tf.Namespace = "test"
-		tf.ClientConfig = &client.Config{Version: test.version}
+		tf.ClientConfig = &client.Config{GroupVersion: &unversioned.GroupVersion{Version: test.version}}
 		bufOut := bytes.NewBuffer([]byte{})
 		bufErr := bytes.NewBuffer([]byte{})
 		bufIn := bytes.NewBuffer([]byte{})

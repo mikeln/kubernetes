@@ -18,12 +18,12 @@ package e2e
 
 import (
 	"fmt"
-	"net/http"
 	"net/url"
 	"time"
 
 	influxdb "github.com/influxdb/influxdb/client"
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/fields"
 	"k8s.io/kubernetes/pkg/labels"
@@ -78,7 +78,7 @@ func verifyExpectedRcsExistAndGetExpectedPods(c *client.Client) ([]string, error
 	// situation when a heapster-monitoring-v1 and heapster-monitoring-v2 replication controller
 	// is running (which would be an error except during a rolling update).
 	for _, rcLabel := range rcLabels {
-		rcList, err := c.ReplicationControllers(api.NamespaceSystem).List(labels.Set{"k8s-app": rcLabel}.AsSelector(), fields.Everything())
+		rcList, err := c.ReplicationControllers(api.NamespaceSystem).List(labels.Set{"k8s-app": rcLabel}.AsSelector(), fields.Everything(), unversioned.ListOptions{})
 		if err != nil {
 			return nil, err
 		}
@@ -87,7 +87,7 @@ func verifyExpectedRcsExistAndGetExpectedPods(c *client.Client) ([]string, error
 				rcLabel, len(rcList.Items))
 		}
 		for _, rc := range rcList.Items {
-			podList, err := c.Pods(api.NamespaceSystem).List(labels.Set(rc.Spec.Selector).AsSelector(), fields.Everything())
+			podList, err := c.Pods(api.NamespaceSystem).List(labels.Set(rc.Spec.Selector).AsSelector(), fields.Everything(), unversioned.ListOptions{})
 			if err != nil {
 				return nil, err
 			}
@@ -103,7 +103,7 @@ func verifyExpectedRcsExistAndGetExpectedPods(c *client.Client) ([]string, error
 }
 
 func expectedServicesExist(c *client.Client) error {
-	serviceList, err := c.Services(api.NamespaceSystem).List(labels.Everything(), fields.Everything())
+	serviceList, err := c.Services(api.NamespaceSystem).List(labels.Everything(), fields.Everything(), unversioned.ListOptions{})
 	if err != nil {
 		return err
 	}
@@ -121,7 +121,7 @@ func expectedServicesExist(c *client.Client) error {
 }
 
 func getAllNodesInCluster(c *client.Client) ([]string, error) {
-	nodeList, err := c.Nodes().List(labels.Everything(), fields.Everything())
+	nodeList, err := c.Nodes().List(labels.Everything(), fields.Everything(), unversioned.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -133,10 +133,6 @@ func getAllNodesInCluster(c *client.Client) ([]string, error) {
 }
 
 func getInfluxdbClient(c *client.Client) (*influxdb.Client, error) {
-	kubeMasterHttpClient, ok := c.Client.(*http.Client)
-	if !ok {
-		Failf("failed to get master http client")
-	}
 	proxyUrl := fmt.Sprintf("%s/api/v1/proxy/namespaces/%s/services/%s:api/", getMasterHost(), api.NamespaceSystem, influxdbService)
 	config := &influxdb.ClientConfig{
 		Host: proxyUrl,
@@ -144,7 +140,7 @@ func getInfluxdbClient(c *client.Client) (*influxdb.Client, error) {
 		Username:   influxdbUser,
 		Password:   influxdbPW,
 		Database:   influxdbDatabaseName,
-		HttpClient: kubeMasterHttpClient,
+		HttpClient: c.Client,
 		IsSecure:   true,
 	}
 	return influxdb.NewClient(config)

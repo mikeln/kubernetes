@@ -23,7 +23,7 @@ import (
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/util"
+	"k8s.io/kubernetes/pkg/util/intstr"
 )
 
 func TestSetDefaultDaemonSet(t *testing.T) {
@@ -85,8 +85,8 @@ func TestSetDefaultDaemonSet(t *testing.T) {
 }
 
 func TestSetDefaultDeployment(t *testing.T) {
-	defaultIntOrString := util.NewIntOrStringFromInt(1)
-	differentIntOrString := util.NewIntOrStringFromInt(5)
+	defaultIntOrString := intstr.FromInt(1)
+	differentIntOrString := intstr.FromInt(5)
 	deploymentLabelKey := "deployment.kubernetes.io/podTemplateHash"
 	period := int64(v1.DefaultTerminationGracePeriodSeconds)
 	defaultTemplate := v1.PodTemplateSpec{
@@ -105,7 +105,7 @@ func TestSetDefaultDeployment(t *testing.T) {
 			original: &Deployment{},
 			expected: &Deployment{
 				Spec: DeploymentSpec{
-					Replicas: newInt(1),
+					Replicas: newInt32(1),
 					Strategy: DeploymentStrategy{
 						Type: RollingUpdateDeploymentStrategyType,
 						RollingUpdate: &RollingUpdateDeployment{
@@ -121,7 +121,7 @@ func TestSetDefaultDeployment(t *testing.T) {
 		{
 			original: &Deployment{
 				Spec: DeploymentSpec{
-					Replicas: newInt(5),
+					Replicas: newInt32(5),
 					Strategy: DeploymentStrategy{
 						RollingUpdate: &RollingUpdateDeployment{
 							MaxSurge: &differentIntOrString,
@@ -131,7 +131,7 @@ func TestSetDefaultDeployment(t *testing.T) {
 			},
 			expected: &Deployment{
 				Spec: DeploymentSpec{
-					Replicas: newInt(5),
+					Replicas: newInt32(5),
 					Strategy: DeploymentStrategy{
 						Type: RollingUpdateDeploymentStrategyType,
 						RollingUpdate: &RollingUpdateDeployment{
@@ -147,7 +147,7 @@ func TestSetDefaultDeployment(t *testing.T) {
 		{
 			original: &Deployment{
 				Spec: DeploymentSpec{
-					Replicas: newInt(5),
+					Replicas: newInt32(5),
 					Strategy: DeploymentStrategy{
 						Type: RecreateDeploymentStrategyType,
 					},
@@ -155,7 +155,7 @@ func TestSetDefaultDeployment(t *testing.T) {
 			},
 			expected: &Deployment{
 				Spec: DeploymentSpec{
-					Replicas: newInt(5),
+					Replicas: newInt32(5),
 					Strategy: DeploymentStrategy{
 						Type: RecreateDeploymentStrategyType,
 					},
@@ -167,7 +167,7 @@ func TestSetDefaultDeployment(t *testing.T) {
 		{
 			original: &Deployment{
 				Spec: DeploymentSpec{
-					Replicas: newInt(5),
+					Replicas: newInt32(5),
 					Strategy: DeploymentStrategy{
 						Type: RecreateDeploymentStrategyType,
 					},
@@ -176,7 +176,7 @@ func TestSetDefaultDeployment(t *testing.T) {
 			},
 			expected: &Deployment{
 				Spec: DeploymentSpec{
-					Replicas: newInt(5),
+					Replicas: newInt32(5),
 					Strategy: DeploymentStrategy{
 						Type: RecreateDeploymentStrategyType,
 					},
@@ -208,8 +208,8 @@ func TestSetDefaultJob(t *testing.T) {
 			Selector: &PodSelector{
 				MatchLabels: map[string]string{"job": "selector"},
 			},
-			Completions: newInt(1),
-			Parallelism: newInt(1),
+			Completions: newInt32(1),
+			Parallelism: newInt32(1),
 		},
 	}
 	tests := []*Job{
@@ -234,7 +234,7 @@ func TestSetDefaultJob(t *testing.T) {
 		// selector from template labels, completions set explicitly, parallelism - default
 		{
 			Spec: JobSpec{
-				Completions: newInt(1),
+				Completions: newInt32(1),
 				Template: v1.PodTemplateSpec{
 					ObjectMeta: v1.ObjectMeta{
 						Labels: map[string]string{"job": "selector"},
@@ -245,7 +245,7 @@ func TestSetDefaultJob(t *testing.T) {
 		// selector from template labels, completions - default, parallelism set explicitly
 		{
 			Spec: JobSpec{
-				Parallelism: newInt(1),
+				Parallelism: newInt32(1),
 				Template: v1.PodTemplateSpec{
 					ObjectMeta: v1.ObjectMeta{
 						Labels: map[string]string{"job": "selector"},
@@ -294,8 +294,8 @@ func roundTrip(t *testing.T, obj runtime.Object) runtime.Object {
 	return obj3
 }
 
-func newInt(val int) *int {
-	p := new(int)
+func newInt32(val int32) *int32 {
+	p := new(int32)
 	*p = val
 	return p
 }

@@ -17,12 +17,14 @@ limitations under the License.
 package etcd
 
 import (
+	"net/http"
 	"sync"
 	"time"
 
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/storage"
+	etcdutil "k8s.io/kubernetes/pkg/storage/etcd/util"
 	"k8s.io/kubernetes/pkg/tools"
 	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/pkg/watch"
@@ -138,12 +140,12 @@ func (w *etcdWatcher) etcdWatch(client tools.EtcdClient, key string, resourceVer
 func etcdGetInitialWatchState(client tools.EtcdClient, key string, recursive bool, incoming chan<- *etcd.Response) (resourceVersion uint64, err error) {
 	resp, err := client.Get(key, false, recursive)
 	if err != nil {
-		if !IsEtcdNotFound(err) {
+		if !etcdutil.IsEtcdNotFound(err) {
 			glog.Errorf("watch was unable to retrieve the current index for the provided key (%q): %v", key, err)
 			return resourceVersion, err
 		}
-		if index, ok := etcdErrorIndex(err); ok {
-			resourceVersion = index
+		if etcdError, ok := err.(*etcd.EtcdError); ok {
+			resourceVersion = etcdError.Index
 		}
 		return resourceVersion, nil
 	}
@@ -181,12 +183,30 @@ func (w *etcdWatcher) translate() {
 		select {
 		case err := <-w.etcdError:
 			if err != nil {
-				w.emit(watch.Event{
-					Type: watch.Error,
-					Object: &unversioned.Status{
+				var status *unversioned.Status
+				switch {
+				case etcdutil.IsEtcdWatchExpired(err):
+					status = &unversioned.Status{
 						Status:  unversioned.StatusFailure,
 						Message: err.Error(),
-					},
+						Code:    http.StatusGone, // Gone
+						Reason:  unversioned.StatusReasonExpired,
+					}
+				// TODO: need to generate errors using api/errors which has a circular dependency on this package
+				//   no other way to inject errors
+				// case etcdutil.IsEtcdUnreachable(err):
+				//   status = errors.NewServerTimeout(...)
+				default:
+					status = &unversioned.Status{
+						Status:  unversioned.StatusFailure,
+						Message: err.Error(),
+						Code:    http.StatusInternalServerError,
+						Reason:  unversioned.StatusReasonInternalError,
+					}
+				}
+				w.emit(watch.Event{
+					Type:   watch.Error,
+					Object: status,
 				})
 			}
 			return

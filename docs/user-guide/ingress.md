@@ -19,8 +19,8 @@ If you are using a released version of Kubernetes, you should
 refer to the docs that go with that version.
 
 <strong>
-The latest 1.0.x release of this document can be found
-[here](http://releases.k8s.io/release-1.0/docs/user-guide/ingress.md).
+The latest release of this document can be found
+[here](http://releases.k8s.io/release-1.1/docs/user-guide/ingress.md).
 
 Documentation for other releases can be found at
 [releases.k8s.io](http://releases.k8s.io).
@@ -38,6 +38,7 @@ Documentation for other releases can be found at
 
 - [Ingress](#ingress)
   - [What is Ingress?](#what-is-ingress)
+  - [Prerequisites](#prerequisites)
   - [The Ingress Resource](#the-ingress-resource)
   - [Ingress controllers](#ingress-controllers)
   - [Types of Ingress](#types-of-ingress)
@@ -84,6 +85,14 @@ An Ingress is a collection of rules that allow inbound connections to reach the 
 
 It can be configured to give services externally-reachable urls, load balance traffic, terminate SSL, offer name based virtual hosting etc. Users request ingress by POSTing the Ingress resource to the API server. An [Ingress controller](#ingress-controllers) is responsible for fulfilling the Ingress, usually with a loadbalancer, though it may also configure your edge router or additional frontends to help handle the traffic in an HA manner.
 
+## Prerequisites
+
+Before you start using the Ingress resource, there are a few things you should understand:
+* The Ingress is a beta resource, not available in any Kubernetes release prior to 1.1.
+* You need an Ingress controller to satisfy an Ingress. Simply creating the resource will have no effect.
+* On GCE/GKE there should be a [L7 cluster addon](../../cluster/addons/cluster-loadbalancing/glbc/README.md#prerequisites), on other platforms you either need to write your own or [deploy an existing controller](https://github.com/kubernetes/contrib/tree/master/Ingress) as a pod.
+* The resource currently does not support HTTPS, but will do so before it leaves beta.
+
 ## The Ingress Resource
 
 A minimal Ingress might look like:
@@ -105,7 +114,7 @@ A minimal Ingress might look like:
 
 *POSTing this to the API server will have no effect if you have not configured an [Ingress controller](#ingress-controllers).*
 
-__Lines 1-4__: As with all other Kubernetes config, an Ingress needs `apiVersion`, `kind`, and `metadata` fields.  For general information about working with config files, see [here](simple-yaml.md), [here](configuring-containers.md), and [here](working-with-resources.md).
+__Lines 1-4__: As with all other Kubernetes config, an Ingress needs `apiVersion`, `kind`, and `metadata` fields.  For general information about working with config files, see [deploying applications](deploying-applications.md), [configuring containers](configuring-containers.md), and [working with resources](working-with-resources.md) documents.
 
 __Lines 5-7__: Ingress [spec](../devel/api-conventions.md#spec-and-status) has all the information needed to configure a loadbalancer or proxy server. Most importantly, it contains a list of rules matched against all incoming requests. Currently the Ingress resource only supports http rules.
 

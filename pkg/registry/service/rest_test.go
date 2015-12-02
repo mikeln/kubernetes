@@ -28,6 +28,7 @@ import (
 	"k8s.io/kubernetes/pkg/registry/service/ipallocator"
 	"k8s.io/kubernetes/pkg/registry/service/portallocator"
 	"k8s.io/kubernetes/pkg/util"
+	"k8s.io/kubernetes/pkg/util/intstr"
 )
 
 // TODO(wojtek-t): Cleanup this file.
@@ -77,7 +78,7 @@ func TestServiceRegistryCreate(t *testing.T) {
 			Ports: []api.ServicePort{{
 				Port:       6502,
 				Protocol:   api.ProtocolTCP,
-				TargetPort: util.NewIntOrStringFromInt(6502),
+				TargetPort: intstr.FromInt(6502),
 			}},
 		},
 	}
@@ -120,7 +121,7 @@ func TestServiceStorageValidatesCreate(t *testing.T) {
 				Ports: []api.ServicePort{{
 					Port:       6502,
 					Protocol:   api.ProtocolTCP,
-					TargetPort: util.NewIntOrStringFromInt(6502),
+					TargetPort: intstr.FromInt(6502),
 				}},
 			},
 		},
@@ -170,7 +171,7 @@ func TestServiceRegistryUpdate(t *testing.T) {
 			Ports: []api.ServicePort{{
 				Port:       6502,
 				Protocol:   api.ProtocolTCP,
-				TargetPort: util.NewIntOrStringFromInt(6502),
+				TargetPort: intstr.FromInt(6502),
 			}},
 		},
 	})
@@ -189,7 +190,7 @@ func TestServiceRegistryUpdate(t *testing.T) {
 			Ports: []api.ServicePort{{
 				Port:       6502,
 				Protocol:   api.ProtocolTCP,
-				TargetPort: util.NewIntOrStringFromInt(6502),
+				TargetPort: intstr.FromInt(6502),
 			}},
 		},
 	})
@@ -234,7 +235,7 @@ func TestServiceStorageValidatesUpdate(t *testing.T) {
 				Ports: []api.ServicePort{{
 					Port:       6502,
 					Protocol:   api.ProtocolTCP,
-					TargetPort: util.NewIntOrStringFromInt(6502),
+					TargetPort: intstr.FromInt(6502),
 				}},
 			},
 		},
@@ -247,7 +248,7 @@ func TestServiceStorageValidatesUpdate(t *testing.T) {
 				Ports: []api.ServicePort{{
 					Port:       6502,
 					Protocol:   api.ProtocolTCP,
-					TargetPort: util.NewIntOrStringFromInt(6502),
+					TargetPort: intstr.FromInt(6502),
 				}},
 			},
 		},
@@ -275,7 +276,7 @@ func TestServiceRegistryExternalService(t *testing.T) {
 			Ports: []api.ServicePort{{
 				Port:       6502,
 				Protocol:   api.ProtocolTCP,
-				TargetPort: util.NewIntOrStringFromInt(6502),
+				TargetPort: intstr.FromInt(6502),
 			}},
 		},
 	}
@@ -350,7 +351,7 @@ func TestServiceRegistryUpdateExternalService(t *testing.T) {
 			Ports: []api.ServicePort{{
 				Port:       6502,
 				Protocol:   api.ProtocolTCP,
-				TargetPort: util.NewIntOrStringFromInt(6502),
+				TargetPort: intstr.FromInt(6502),
 			}},
 		},
 	}
@@ -388,12 +389,12 @@ func TestServiceRegistryUpdateMultiPortExternalService(t *testing.T) {
 				Name:       "p",
 				Port:       6502,
 				Protocol:   api.ProtocolTCP,
-				TargetPort: util.NewIntOrStringFromInt(6502),
+				TargetPort: intstr.FromInt(6502),
 			}, {
 				Name:       "q",
 				Port:       8086,
 				Protocol:   api.ProtocolTCP,
-				TargetPort: util.NewIntOrStringFromInt(8086),
+				TargetPort: intstr.FromInt(8086),
 			}},
 		},
 	}
@@ -461,6 +462,14 @@ func TestServiceRegistryResourceLocation(t *testing.T) {
 		ObjectMeta: api.ObjectMeta{Name: "foo"},
 		Spec: api.ServiceSpec{
 			Selector: map[string]string{"bar": "baz"},
+			Ports: []api.ServicePort{
+				// Service port 9393 should route to endpoint port "p", which is port 93
+				{Name: "p", Port: 9393, TargetPort: intstr.FromString("p")},
+
+				// Service port 93 should route to unnamed endpoint port, which is port 80
+				// This is to test that the service port definition is used when determining resource location
+				{Name: "", Port: 93, TargetPort: intstr.FromInt(80)},
+			},
 		},
 	})
 	redirector := rest.Redirector(storage)
@@ -489,8 +498,20 @@ func TestServiceRegistryResourceLocation(t *testing.T) {
 		t.Errorf("Expected %v, but got %v", e, a)
 	}
 
-	// Test a name + port number.
+	// Test a name + port number (service port 93 -> target port 80)
 	location, _, err = redirector.ResourceLocation(ctx, "foo:93")
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+	if location == nil {
+		t.Errorf("Unexpected nil: %v", location)
+	}
+	if e, a := "//1.2.3.4:80", location.String(); e != a {
+		t.Errorf("Expected %v, but got %v", e, a)
+	}
+
+	// Test a name + port number (service port 9393 -> target port "p" -> endpoint port 93)
+	location, _, err = redirector.ResourceLocation(ctx, "foo:9393")
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
@@ -569,7 +590,7 @@ func TestServiceRegistryIPAllocation(t *testing.T) {
 			Ports: []api.ServicePort{{
 				Port:       6502,
 				Protocol:   api.ProtocolTCP,
-				TargetPort: util.NewIntOrStringFromInt(6502),
+				TargetPort: intstr.FromInt(6502),
 			}},
 		},
 	}
@@ -592,7 +613,7 @@ func TestServiceRegistryIPAllocation(t *testing.T) {
 			Ports: []api.ServicePort{{
 				Port:       6502,
 				Protocol:   api.ProtocolTCP,
-				TargetPort: util.NewIntOrStringFromInt(6502),
+				TargetPort: intstr.FromInt(6502),
 			}},
 		}}
 	ctx = api.NewDefaultContext()
@@ -624,7 +645,7 @@ func TestServiceRegistryIPAllocation(t *testing.T) {
 			Ports: []api.ServicePort{{
 				Port:       6502,
 				Protocol:   api.ProtocolTCP,
-				TargetPort: util.NewIntOrStringFromInt(6502),
+				TargetPort: intstr.FromInt(6502),
 			}},
 		},
 	}
@@ -651,7 +672,7 @@ func TestServiceRegistryIPReallocation(t *testing.T) {
 			Ports: []api.ServicePort{{
 				Port:       6502,
 				Protocol:   api.ProtocolTCP,
-				TargetPort: util.NewIntOrStringFromInt(6502),
+				TargetPort: intstr.FromInt(6502),
 			}},
 		},
 	}
@@ -679,7 +700,7 @@ func TestServiceRegistryIPReallocation(t *testing.T) {
 			Ports: []api.ServicePort{{
 				Port:       6502,
 				Protocol:   api.ProtocolTCP,
-				TargetPort: util.NewIntOrStringFromInt(6502),
+				TargetPort: intstr.FromInt(6502),
 			}},
 		},
 	}
@@ -706,7 +727,7 @@ func TestServiceRegistryIPUpdate(t *testing.T) {
 			Ports: []api.ServicePort{{
 				Port:       6502,
 				Protocol:   api.ProtocolTCP,
-				TargetPort: util.NewIntOrStringFromInt(6502),
+				TargetPort: intstr.FromInt(6502),
 			}},
 		},
 	}
@@ -760,7 +781,7 @@ func TestServiceRegistryIPLoadBalancer(t *testing.T) {
 			Ports: []api.ServicePort{{
 				Port:       6502,
 				Protocol:   api.ProtocolTCP,
-				TargetPort: util.NewIntOrStringFromInt(6502),
+				TargetPort: intstr.FromInt(6502),
 			}},
 		},
 	}

@@ -55,7 +55,7 @@ func newDaemonSet(name string) *extensions.DaemonSet {
 			Namespace: api.NamespaceDefault,
 		},
 		Spec: extensions.DaemonSetSpec{
-			Selector: simpleDaemonSetLabel,
+			Selector: &extensions.PodSelector{MatchLabels: simpleDaemonSetLabel},
 			Template: &api.PodTemplateSpec{
 				ObjectMeta: api.ObjectMeta{
 					Labels: simpleDaemonSetLabel,
@@ -130,7 +130,7 @@ func addPods(podStore cache.Store, nodeName string, label map[string]string, num
 }
 
 func newTestController() (*DaemonSetsController, *controller.FakePodControl) {
-	client := client.NewOrDie(&client.Config{Host: "", Version: testapi.Default.GroupAndVersion()})
+	client := client.NewOrDie(&client.Config{Host: "", GroupVersion: testapi.Default.GroupVersion()})
 	manager := NewDaemonSetsController(client, controller.NoResyncPeriodFunc)
 	manager.podStoreSynced = alwaysReady
 	podControl := &controller.FakePodControl{}
@@ -191,6 +191,17 @@ func TestNotReadNodeDaemonDoesNotLaunchPod(t *testing.T) {
 			{Type: api.NodeReady, Status: api.ConditionFalse},
 		},
 	}
+	manager.nodeStore.Add(node)
+	ds := newDaemonSet("foo")
+	manager.dsStore.Add(ds)
+	syncAndValidateDaemonSets(t, manager, ds, podControl, 0, 0)
+}
+
+// DaemonSets should not place onto Unschedulable nodes
+func TestUnschedulableNodeDaemonDoesNotLaunchPod(t *testing.T) {
+	manager, podControl := newTestController()
+	node := newNode("not-ready", nil)
+	node.Spec.Unschedulable = true
 	manager.nodeStore.Add(node)
 	ds := newDaemonSet("foo")
 	manager.dsStore.Add(ds)

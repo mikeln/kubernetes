@@ -24,6 +24,7 @@ import (
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/errors"
 	"k8s.io/kubernetes/pkg/api/meta"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/client/cache"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/fields"
@@ -48,11 +49,11 @@ type exists struct {
 }
 
 func (e *exists) Admit(a admission.Attributes) (err error) {
-	defaultVersion, kind, err := api.RESTMapper.VersionAndKindForResource(a.GetResource())
+	gvk, err := api.RESTMapper.KindFor(a.GetResource())
 	if err != nil {
 		return errors.NewInternalError(err)
 	}
-	mapping, err := api.RESTMapper.RESTMapping(kind, defaultVersion)
+	mapping, err := api.RESTMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
 		return errors.NewInternalError(err)
 	}
@@ -92,10 +93,10 @@ func NewExists(c client.Interface) admission.Interface {
 	reflector := cache.NewReflector(
 		&cache.ListWatch{
 			ListFunc: func() (runtime.Object, error) {
-				return c.Namespaces().List(labels.Everything(), fields.Everything())
+				return c.Namespaces().List(labels.Everything(), fields.Everything(), unversioned.ListOptions{})
 			},
-			WatchFunc: func(options api.ListOptions) (watch.Interface, error) {
-				return c.Namespaces().Watch(labels.Everything(), fields.Everything(), options)
+			WatchFunc: func(options unversioned.ListOptions) (watch.Interface, error) {
+				return c.Namespaces().Watch(options)
 			},
 		},
 		&api.Namespace{},

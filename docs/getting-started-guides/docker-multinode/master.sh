@@ -27,7 +27,7 @@ fi
 
 # Make sure k8s version env is properly set
 if [ -z ${K8S_VERSION} ]; then
-    K8S_VERSION="1.0.3"
+    K8S_VERSION="1.0.7"
     echo "K8S_VERSION is not set, using default: ${K8S_VERSION}"
 else
     echo "k8s version is set to: ${K8S_VERSION}"
@@ -37,6 +37,14 @@ fi
 if [ "$(id -u)" != "0" ]; then
     echo >&2 "Please run as root"
     exit 1
+fi
+
+# Make sure master ip is properly set
+if [ -z ${MASTER_IP} ]; then
+    echo "Please export MASTER_IP in your env"
+    exit 1
+else
+    echo "k8s master is set to: ${MASTER_IP}"
 fi
 
 # Check if a command is valid
@@ -88,7 +96,15 @@ detect_lsb() {
 
 # Start the bootstrap daemon
 bootstrap_daemon() {
-    sudo -b docker -d -H unix:///var/run/docker-bootstrap.sock -p /var/run/docker-bootstrap.pid --iptables=false --ip-masq=false --bridge=none --graph=/var/lib/docker-bootstrap 2> /var/log/docker-bootstrap.log 1> /dev/null
+    sudo -b docker -d \
+    -H unix:///var/run/docker-bootstrap.sock \
+    -p /var/run/docker-bootstrap.pid \
+    --iptables=false \
+    --ip-masq=false \
+    --bridge=none \
+    --graph=/var/lib/docker-bootstrap \
+    2> /var/log/docker-bootstrap.log \
+    1> /dev/null
     
     sleep 5
 }
@@ -98,19 +114,40 @@ DOCKER_CONF=""
 
 start_k8s(){
     # Start etcd 
-    docker -H unix:///var/run/docker-bootstrap.sock run --restart=always --net=host -d gcr.io/google_containers/etcd:2.0.12 /usr/local/bin/etcd --addr=127.0.0.1:4001 --bind-addr=0.0.0.0:4001 --data-dir=/var/etcd/data
+    docker -H unix:///var/run/docker-bootstrap.sock run \
+    --restart=always \
+    --net=host \
+    -d \
+    gcr.io/google_containers/etcd:2.2.1 \
+    /usr/local/bin/etcd \
+    --listen-client-urls=http://127.0.0.1:4001,http://${MASTER_IP}:4001 \
+    --advertise-client-urls=http://${MASTER_IP}:4001 \
+    --data-dir=/var/etcd/data
 
     sleep 5
     # Set flannel net config
-    docker -H unix:///var/run/docker-bootstrap.sock run --net=host gcr.io/google_containers/etcd:2.0.12 etcdctl set /coreos.com/network/config '{ "Network": "10.1.0.0/16", "Backend": {"Type": "vxlan"}}'
+    docker -H unix:///var/run/docker-bootstrap.sock run \
+    --net=host gcr.io/google_containers/etcd:2.2.1 \
+    etcdctl \
+    set /coreos.com/network/config \
+    '{ "Network": "10.1.0.0/16", "Backend": {"Type": "vxlan"}}'
 
     # iface may change to a private network interface, eth0 is for default
-    flannelCID=$(docker -H unix:///var/run/docker-bootstrap.sock run --restart=always -d --net=host --privileged -v /dev/net:/dev/net quay.io/coreos/flannel:0.5.3 /opt/bin/flanneld -iface="eth0")
+    flannelCID=$(docker -H unix:///var/run/docker-bootstrap.sock run \
+    --restart=always \
+    -d \
+    --net=host \
+    --privileged \
+    -v /dev/net:/dev/net \
+    quay.io/coreos/flannel:0.5.3 \
+    /opt/bin/flanneld \
+    -iface="eth0")
 
     sleep 8
 
     # Copy flannel env out and source it on the host
-    docker -H unix:///var/run/docker-bootstrap.sock cp ${flannelCID}:/run/flannel/subnet.env .
+    docker -H unix:///var/run/docker-bootstrap.sock \
+        cp ${flannelCID}:/run/flannel/subnet.env .
     source subnet.env
 
     # Configure docker net settings, then restart it

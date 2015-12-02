@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/fields"
 	"k8s.io/kubernetes/pkg/labels"
 
@@ -34,7 +35,7 @@ const (
 	scaleDownTimeout = 30 * time.Minute
 )
 
-var _ = Describe("Autoscaling", func() {
+var _ = Describe("[Autoscaling] [Skipped]", func() {
 	f := NewFramework("autoscaling")
 	var nodeCount int
 	var coresPerNode int
@@ -43,7 +44,7 @@ var _ = Describe("Autoscaling", func() {
 	BeforeEach(func() {
 		SkipUnlessProviderIs("gce")
 
-		nodes, err := f.Client.Nodes().List(labels.Everything(), fields.Everything())
+		nodes, err := f.Client.Nodes().List(labels.Everything(), fields.Everything(), unversioned.ListOptions{})
 		expectNoError(err)
 		nodeCount = len(nodes.Items)
 		Expect(nodeCount).NotTo(BeZero())
@@ -57,7 +58,7 @@ var _ = Describe("Autoscaling", func() {
 		cleanUpAutoscaler()
 	})
 
-	It("[Skipped][Autoscaling Suite] should scale cluster size based on cpu utilization", func() {
+	It("Should scale cluster size based on cpu utilization", func() {
 		setUpAutoscaler("cpu/node_utilization", 0.4, nodeCount, nodeCount+1)
 
 		// Consume 50% CPU
@@ -71,7 +72,7 @@ var _ = Describe("Autoscaling", func() {
 		expectNoError(waitForClusterSize(f.Client, nodeCount, scaleDownTimeout))
 	})
 
-	It("[Skipped][Autoscaling Suite] should scale cluster size based on cpu reservation", func() {
+	It("Should scale cluster size based on cpu reservation", func() {
 		setUpAutoscaler("cpu/node_reservation", 0.5, nodeCount, nodeCount+1)
 
 		ReserveCpu(f, "cpu-reservation", 600*nodeCount*coresPerNode)
@@ -81,7 +82,7 @@ var _ = Describe("Autoscaling", func() {
 		expectNoError(waitForClusterSize(f.Client, nodeCount, scaleDownTimeout))
 	})
 
-	It("[Skipped][Autoscaling Suite] should scale cluster size based on memory utilization", func() {
+	It("Should scale cluster size based on memory utilization", func() {
 		setUpAutoscaler("memory/node_utilization", 0.6, nodeCount, nodeCount+1)
 
 		// Consume 60% of total memory capacity
@@ -96,7 +97,7 @@ var _ = Describe("Autoscaling", func() {
 		expectNoError(waitForClusterSize(f.Client, nodeCount, scaleDownTimeout))
 	})
 
-	It("[Skipped][Autoscaling Suite] should scale cluster size based on memory reservation", func() {
+	It("Should scale cluster size based on memory reservation", func() {
 		setUpAutoscaler("memory/node_reservation", 0.5, nodeCount, nodeCount+1)
 
 		ReserveMemory(f, "memory-reservation", nodeCount*memCapacityMb*6/10)
@@ -147,7 +148,7 @@ func ReserveCpu(f *Framework, id string, millicores int) {
 		Name:       id,
 		Namespace:  f.Namespace.Name,
 		Timeout:    10 * time.Minute,
-		Image:      "beta.gcr.io/google_containers/pause:2.0",
+		Image:      "gcr.io/google_containers/pause:2.0",
 		Replicas:   millicores / 100,
 		CpuRequest: 100,
 	}
@@ -161,7 +162,7 @@ func ReserveMemory(f *Framework, id string, megabytes int) {
 		Name:       id,
 		Namespace:  f.Namespace.Name,
 		Timeout:    10 * time.Minute,
-		Image:      "beta.gcr.io/google_containers/pause:2.0",
+		Image:      "gcr.io/google_containers/pause:2.0",
 		Replicas:   megabytes / 500,
 		MemRequest: 500 * 1024 * 1024,
 	}

@@ -45,13 +45,16 @@ declare -r KUBE_GITHUB="https://github.com/kubernetes/kubernetes.git"
 declare -r KUBE_RELEASE_VERSION=${1-}
 declare -r KUBE_RELEASE_UMASK=${KUBE_RELEASE_UMASK:-022}
 
-VERSION_REGEX="^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-beta|-alpha\\.(0|[1-9][0-9]*))?$"
+VERSION_REGEX="^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-(beta|alpha)\\.(0|[1-9][0-9]*))?$"
 [[ ${KUBE_RELEASE_VERSION} =~ ${VERSION_REGEX} ]] || {
   echo "!!! You must specify the version you are releasing in the form of '${VERSION_REGEX}'" >&2
   exit 1
 }
+VERSION_MAJOR="${BASH_REMATCH[1]}"
+VERSION_MINOR="${BASH_REMATCH[2]}"
+RELEASE_BRANCH="release-${VERSION_MAJOR}.${VERSION_MINOR}"
 
-declare -r KUBE_BUILD_DIR="/tmp/kubernetes-release-${KUBE_RELEASE_VERSION}-$(date +%s)"
+declare -r KUBE_BUILD_DIR=$(mktemp -d "/tmp/kubernetes-build-release-${KUBE_RELEASE_VERSION}-XXXXXXX")
 
 # Set the default umask for the release. This ensures consistency
 # across our release builds.
@@ -90,18 +93,21 @@ SHA1=$(sha1 "${KUBE_BUILD_DIR}/kubernetes.tar.gz")
 
 cat <<- EOM
 
-Success! You must now do the following: (you may want to cut
-  and paste these instructions elsewhere, step 1 can be spammy)
+Success!  You must now do the following (you may want to cut and paste these
+instructions elsewhere):
 
-  1) (cd ${KUBE_BUILD_DIR}; build/push-official-release.sh ${KUBE_RELEASE_VERSION})
-  2) Go to https://github.com/GoogleCloudPlatform/kubernetes/releases
-     and create a new 'Release ${KUBE_RELEASE_VERSION} Candidate' release
-     with the ${KUBE_RELEASE_VERSION} tag. Mark it as a pre-release.
-  3) Upload the ${KUBE_BUILD_DIR}/kubernetes.tar.gz to GitHub
-  4) Use this template for the release:
+  1) pushd ${KUBE_BUILD_DIR}; build/push-official-release.sh ${KUBE_RELEASE_VERSION}
 
-## [Documentation](http://releases.k8s.io/${KUBE_RELEASE_VERSION}/docs/README.md)
-## [Examples](http://releases.k8s.io/${KUBE_RELEASE_VERSION}/examples)
+  2) Release notes draft, to be published when the release is announced:
+
+     a) Title:
+
+       Release ${KUBE_RELEASE_VERSION}
+
+     b) Template for the description:
+
+## [Documentation](http://releases.k8s.io/${RELEASE_BRANCH}/docs/README.md)
+## [Examples](http://releases.k8s.io/${RELEASE_BRANCH}/examples)
 ## Changes since <last release> (last PR <last PR>)
 
 <release notes>
@@ -112,7 +118,10 @@ binary | hash alg | hash
 \`kubernetes.tar.gz\` | sha1 | \`${SHA1}\`
 
      We'll fill in the release notes in the next stage.
-  5) Ensure all the binaries are in place on GitHub and GCS before cleaning.
-  6) (cd ${KUBE_BUILD_DIR}; make clean; cd -; rm -rf ${KUBE_BUILD_DIR})
+
+  4) Ensure all the binaries are in place on GCS before cleaning, (you might
+  want to wait until the release is announced and published on GitHub, too).
+
+  5) make clean; popd; rm -rf ${KUBE_BUILD_DIR}
 
 EOM

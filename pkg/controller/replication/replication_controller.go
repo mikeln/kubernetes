@@ -24,6 +24,7 @@ import (
 
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/client/cache"
 	"k8s.io/kubernetes/pkg/client/record"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
@@ -108,10 +109,10 @@ func NewReplicationManager(kubeClient client.Interface, resyncPeriod controller.
 	rm.rcStore.Store, rm.rcController = framework.NewInformer(
 		&cache.ListWatch{
 			ListFunc: func() (runtime.Object, error) {
-				return rm.kubeClient.ReplicationControllers(api.NamespaceAll).List(labels.Everything(), fields.Everything())
+				return rm.kubeClient.ReplicationControllers(api.NamespaceAll).List(labels.Everything(), fields.Everything(), unversioned.ListOptions{})
 			},
-			WatchFunc: func(options api.ListOptions) (watch.Interface, error) {
-				return rm.kubeClient.ReplicationControllers(api.NamespaceAll).Watch(labels.Everything(), fields.Everything(), options)
+			WatchFunc: func(options unversioned.ListOptions) (watch.Interface, error) {
+				return rm.kubeClient.ReplicationControllers(api.NamespaceAll).Watch(options)
 			},
 		},
 		&api.ReplicationController{},
@@ -149,10 +150,10 @@ func NewReplicationManager(kubeClient client.Interface, resyncPeriod controller.
 	rm.podStore.Store, rm.podController = framework.NewInformer(
 		&cache.ListWatch{
 			ListFunc: func() (runtime.Object, error) {
-				return rm.kubeClient.Pods(api.NamespaceAll).List(labels.Everything(), fields.Everything())
+				return rm.kubeClient.Pods(api.NamespaceAll).List(labels.Everything(), fields.Everything(), unversioned.ListOptions{})
 			},
-			WatchFunc: func(options api.ListOptions) (watch.Interface, error) {
-				return rm.kubeClient.Pods(api.NamespaceAll).Watch(labels.Everything(), fields.Everything(), options)
+			WatchFunc: func(options unversioned.ListOptions) (watch.Interface, error) {
+				return rm.kubeClient.Pods(api.NamespaceAll).Watch(options)
 			},
 		},
 		&api.Pod{},
@@ -451,7 +452,7 @@ func (rm *ReplicationManager) syncReplicationController(key string) error {
 	if err := updateReplicaCount(rm.kubeClient.ReplicationControllers(rc.Namespace), rc, len(filteredPods)); err != nil {
 		// Multiple things could lead to this update failing. Requeuing the controller ensures
 		// we retry with some fairness.
-		glog.V(2).Infof("Failed to update replica count for controller %v, requeuing", rc.Name)
+		glog.V(2).Infof("Failed to update replica count for controller %v/%v; requeuing; error: %v", rc.Namespace, rc.Name, err)
 		rm.enqueueController(&rc)
 	}
 	return nil

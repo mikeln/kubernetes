@@ -19,7 +19,7 @@ package unversioned_test
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -27,6 +27,7 @@ import (
 	"testing"
 
 	"k8s.io/kubernetes/pkg/api/testapi"
+	uapi "k8s.io/kubernetes/pkg/api/unversioned"
 	unversionedapi "k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/client/unversioned/fake"
@@ -41,54 +42,53 @@ func objBody(object interface{}) io.ReadCloser {
 }
 
 func TestNegotiateVersion(t *testing.T) {
-	refusedErr := fmt.Errorf("connection refused")
 	tests := []struct {
-		name, version, expectedVersion string
-		serverVersions                 []string
-		clientVersions                 []string
-		config                         *unversioned.Config
-		expectErr                      func(err error) bool
-		sendErr                        error
+		name            string
+		version         *uapi.GroupVersion
+		expectedVersion *uapi.GroupVersion
+		serverVersions  []string
+		clientVersions  []uapi.GroupVersion
+		config          *unversioned.Config
+		expectErr       func(err error) bool
+		sendErr         error
 	}{
 		{
 			name:            "server supports client default",
-			version:         "version1",
+			version:         &uapi.GroupVersion{Version: "version1"},
 			config:          &unversioned.Config{},
-			serverVersions:  []string{"version1", testapi.Default.Version()},
-			clientVersions:  []string{"version1", testapi.Default.Version()},
-			expectedVersion: "version1",
+			serverVersions:  []string{"/version1", testapi.Default.Version()},
+			clientVersions:  []uapi.GroupVersion{{Version: "version1"}, {Version: testapi.Default.Version()}},
+			expectedVersion: &uapi.GroupVersion{Version: "version1"},
 		},
 		{
 			name:            "server falls back to client supported",
-			version:         testapi.Default.Version(),
+			version:         &uapi.GroupVersion{Version: testapi.Default.Version()},
 			config:          &unversioned.Config{},
-			serverVersions:  []string{"version1"},
-			clientVersions:  []string{"version1", testapi.Default.Version()},
-			expectedVersion: "version1",
+			serverVersions:  []string{"/version1"},
+			clientVersions:  []uapi.GroupVersion{{Version: "version1"}, {Version: testapi.Default.Version()}},
+			expectedVersion: &uapi.GroupVersion{Version: "version1"},
 		},
 		{
 			name:            "explicit version supported",
-			version:         "",
-			config:          &unversioned.Config{Version: testapi.Default.Version()},
-			serverVersions:  []string{"version1", testapi.Default.Version()},
-			clientVersions:  []string{"version1", testapi.Default.Version()},
-			expectedVersion: testapi.Default.Version(),
+			config:          &unversioned.Config{GroupVersion: testapi.Default.GroupVersion()},
+			serverVersions:  []string{"/version1", testapi.Default.Version()},
+			clientVersions:  []uapi.GroupVersion{{Version: "version1"}, {Version: testapi.Default.Version()}},
+			expectedVersion: &uapi.GroupVersion{Version: testapi.Default.Version()},
 		},
 		{
 			name:           "explicit version not supported",
-			version:        "",
-			config:         &unversioned.Config{Version: testapi.Default.Version()},
-			serverVersions: []string{"version1"},
-			clientVersions: []string{"version1", testapi.Default.Version()},
+			config:         &unversioned.Config{GroupVersion: testapi.Default.GroupVersion()},
+			serverVersions: []string{"/version1"},
+			clientVersions: []uapi.GroupVersion{{Version: "version1"}, {Version: testapi.Default.Version()}},
 			expectErr:      func(err error) bool { return strings.Contains(err.Error(), `server does not support API version "v1"`) },
 		},
 		{
 			name:           "connection refused error",
-			config:         &unversioned.Config{Version: testapi.Default.Version()},
-			serverVersions: []string{"version1"},
-			clientVersions: []string{"version1", testapi.Default.Version()},
-			sendErr:        refusedErr,
-			expectErr:      func(err error) bool { return err == refusedErr },
+			config:         &unversioned.Config{GroupVersion: testapi.Default.GroupVersion()},
+			serverVersions: []string{"/version1"},
+			clientVersions: []uapi.GroupVersion{{Version: "version1"}, {Version: testapi.Default.Version()}},
+			sendErr:        errors.New("connection refused"),
+			expectErr:      func(err error) bool { return strings.Contains(err.Error(), "connection refused") },
 		},
 	}
 	codec := testapi.Default.Codec()
@@ -100,7 +100,7 @@ func TestNegotiateVersion(t *testing.T) {
 				StatusCode: 200,
 				Body:       objBody(&unversionedapi.APIVersions{Versions: test.serverVersions}),
 			},
-			Client: fake.HTTPClientFunc(func(req *http.Request) (*http.Response, error) {
+			Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 				if test.sendErr != nil {
 					return nil, test.sendErr
 				}
@@ -119,8 +119,8 @@ func TestNegotiateVersion(t *testing.T) {
 			}
 			continue
 		}
-		if response != test.expectedVersion {
-			t.Errorf("expected version %s, got %s.", test.expectedVersion, response)
+		if *response != *test.expectedVersion {
+			t.Errorf("%s: expected version %s, got %s.", test.name, test.expectedVersion, response)
 		}
 	}
 }

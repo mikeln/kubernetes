@@ -19,8 +19,8 @@ If you are using a released version of Kubernetes, you should
 refer to the docs that go with that version.
 
 <strong>
-The latest 1.0.x release of this document can be found
-[here](http://releases.k8s.io/release-1.0/docs/user-guide/deployments.md).
+The latest release of this document can be found
+[here](http://releases.k8s.io/release-1.1/docs/user-guide/deployments.md).
 
 Documentation for other releases can be found at
 [releases.k8s.io](http://releases.k8s.io).
@@ -350,7 +350,7 @@ Note: This is not implemented yet.
 
 #### Rolling Update Deployment
 
-Deployment updates pods in a [rolling update][update-demo/] fashion
+Deployment updates pods in a [rolling update](update-demo/) fashion
 when `.spec.strategy.type==RollingUpdate`.
 Users can specify `maxUnavailable`, `maxSurge` and `minReadySeconds` to control
 the rolling update process.

@@ -41,8 +41,8 @@ import (
 	"k8s.io/kubernetes/pkg/auth/authenticator"
 	"k8s.io/kubernetes/pkg/auth/authorizer"
 	"k8s.io/kubernetes/pkg/auth/handlers"
-	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/healthz"
+	kubeletclient "k8s.io/kubernetes/pkg/kubelet/client"
 	"k8s.io/kubernetes/pkg/master/ports"
 	"k8s.io/kubernetes/pkg/registry/componentstatus"
 	controlleretcd "k8s.io/kubernetes/pkg/registry/controller/etcd"
@@ -51,6 +51,8 @@ import (
 	endpointsetcd "k8s.io/kubernetes/pkg/registry/endpoint/etcd"
 	eventetcd "k8s.io/kubernetes/pkg/registry/event/etcd"
 	expcontrolleretcd "k8s.io/kubernetes/pkg/registry/experimental/controller/etcd"
+	"k8s.io/kubernetes/pkg/registry/generic"
+	genericetcd "k8s.io/kubernetes/pkg/registry/generic/etcd"
 	ingressetcd "k8s.io/kubernetes/pkg/registry/ingress/etcd"
 	jobetcd "k8s.io/kubernetes/pkg/registry/job/etcd"
 	limitrangeetcd "k8s.io/kubernetes/pkg/registry/limitrange/etcd"
@@ -74,11 +76,11 @@ import (
 	thirdpartyresourcedataetcd "k8s.io/kubernetes/pkg/registry/thirdpartyresourcedata/etcd"
 	"k8s.io/kubernetes/pkg/storage"
 	etcdstorage "k8s.io/kubernetes/pkg/storage/etcd"
+	etcdutil "k8s.io/kubernetes/pkg/storage/etcd/util"
 	"k8s.io/kubernetes/pkg/tools"
 	"k8s.io/kubernetes/pkg/ui"
 	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/pkg/util/sets"
-	utilsets "k8s.io/kubernetes/pkg/util/sets"
 
 	daemonetcd "k8s.io/kubernetes/pkg/registry/daemonset/etcd"
 	horizontalpodautoscaleretcd "k8s.io/kubernetes/pkg/registry/horizontalpodautoscaler/etcd"
@@ -180,8 +182,7 @@ type Config struct {
 	// StorageVersions is a map between groups and their storage versions
 	StorageVersions map[string]string
 	EventTTL        time.Duration
-	NodeRegexp      string
-	KubeletClient   client.KubeletClient
+	KubeletClient   kubeletclient.KubeletClient
 	// allow downstream consumers to disable the core controller loops
 	EnableCoreControllers bool
 	EnableLogsSupport     bool
@@ -268,11 +269,11 @@ type Config struct {
 	KubernetesServiceNodePort int
 }
 
-func (c *Config) storageFactory() storage.StorageFactory {
+func (c *Config) storageDecorator() generic.StorageDecorator {
 	if c.EnableWatchCache {
-		return storage.NewCacher
+		return genericetcd.StorageWithCacher
 	}
-	return storage.NoDecoration
+	return generic.UndecoratedStorage
 }
 
 type InstallSSHKey func(user string, data []byte) error
@@ -399,18 +400,6 @@ func setDefaults(c *Config) {
 	}
 	if c.CacheTimeout == 0 {
 		c.CacheTimeout = 5 * time.Second
-	}
-	for c.PublicAddress == nil || c.PublicAddress.IsUnspecified() || c.PublicAddress.IsLoopback() {
-		// TODO: This should be done in the caller and just require a
-		// valid value to be passed in.
-		hostIP, err := util.ChooseHostInterface()
-		if err != nil {
-			glog.Fatalf("Unable to find suitable network address.error='%v' . "+
-				"Will try again in 5 seconds. Set the public address directly to avoid this wait.", err)
-			time.Sleep(5 * time.Second)
-		}
-		c.PublicAddress = hostIP
-		glog.Infof("Will report %v as public IP address.", c.PublicAddress)
 	}
 	if c.RequestContextMapper == nil {
 		c.RequestContextMapper = api.NewRequestContextMapper()
@@ -542,31 +531,37 @@ func (m *Master) init(c *Config) {
 
 	healthzChecks := []healthz.HealthzChecker{}
 
-	storageFactory := c.storageFactory()
+	storageDecorator := c.storageDecorator()
 	dbClient := func(resource string) storage.Interface { return c.StorageDestinations.get("", resource) }
-	podStorage := podetcd.NewStorage(dbClient("pods"), storageFactory, c.KubeletClient, m.proxyTransport)
 
-	podTemplateStorage := podtemplateetcd.NewREST(dbClient("podTemplates"), storageFactory)
+	podTemplateStorage := podtemplateetcd.NewREST(dbClient("podTemplates"), storageDecorator)
 
-	eventStorage := eventetcd.NewREST(dbClient("events"), storageFactory, uint64(c.EventTTL.Seconds()))
-	limitRangeStorage := limitrangeetcd.NewREST(dbClient("limitRanges"), storageFactory)
+	eventStorage := eventetcd.NewREST(dbClient("events"), storageDecorator, uint64(c.EventTTL.Seconds()))
+	limitRangeStorage := limitrangeetcd.NewREST(dbClient("limitRanges"), storageDecorator)
 
-	resourceQuotaStorage, resourceQuotaStatusStorage := resourcequotaetcd.NewREST(dbClient("resourceQuotas"), storageFactory)
-	secretStorage := secretetcd.NewREST(dbClient("secrets"), storageFactory)
-	serviceAccountStorage := serviceaccountetcd.NewREST(dbClient("serviceAccounts"), storageFactory)
-	persistentVolumeStorage, persistentVolumeStatusStorage := pvetcd.NewREST(dbClient("persistentVolumes"), storageFactory)
-	persistentVolumeClaimStorage, persistentVolumeClaimStatusStorage := pvcetcd.NewREST(dbClient("persistentVolumeClaims"), storageFactory)
+	resourceQuotaStorage, resourceQuotaStatusStorage := resourcequotaetcd.NewREST(dbClient("resourceQuotas"), storageDecorator)
+	secretStorage := secretetcd.NewREST(dbClient("secrets"), storageDecorator)
+	serviceAccountStorage := serviceaccountetcd.NewREST(dbClient("serviceAccounts"), storageDecorator)
+	persistentVolumeStorage, persistentVolumeStatusStorage := pvetcd.NewREST(dbClient("persistentVolumes"), storageDecorator)
+	persistentVolumeClaimStorage, persistentVolumeClaimStatusStorage := pvcetcd.NewREST(dbClient("persistentVolumeClaims"), storageDecorator)
 
-	namespaceStorage, namespaceStatusStorage, namespaceFinalizeStorage := namespaceetcd.NewREST(dbClient("namespaces"), storageFactory)
+	namespaceStorage, namespaceStatusStorage, namespaceFinalizeStorage := namespaceetcd.NewREST(dbClient("namespaces"), storageDecorator)
 	m.namespaceRegistry = namespace.NewRegistry(namespaceStorage)
 
-	endpointsStorage := endpointsetcd.NewREST(dbClient("endpoints"), storageFactory)
+	endpointsStorage := endpointsetcd.NewREST(dbClient("endpoints"), storageDecorator)
 	m.endpointRegistry = endpoint.NewRegistry(endpointsStorage)
 
-	nodeStorage, nodeStatusStorage := nodeetcd.NewREST(dbClient("nodes"), storageFactory, c.KubeletClient, m.proxyTransport)
+	nodeStorage, nodeStatusStorage := nodeetcd.NewREST(dbClient("nodes"), storageDecorator, c.KubeletClient, m.proxyTransport)
 	m.nodeRegistry = node.NewRegistry(nodeStorage)
 
-	serviceStorage := serviceetcd.NewREST(dbClient("services"), storageFactory)
+	podStorage := podetcd.NewStorage(
+		dbClient("pods"),
+		storageDecorator,
+		kubeletclient.ConnectionInfoGetter(nodeStorage),
+		m.proxyTransport,
+	)
+
+	serviceStorage := serviceetcd.NewREST(dbClient("services"), storageDecorator)
 	m.serviceRegistry = service.NewRegistry(serviceStorage)
 
 	var serviceClusterIPRegistry service.RangeRegistry
@@ -587,7 +582,7 @@ func (m *Master) init(c *Config) {
 	})
 	m.serviceNodePortAllocator = serviceNodePortRegistry
 
-	controllerStorage, controllerStatusStorage := controlleretcd.NewREST(dbClient("replicationControllers"), storageFactory)
+	controllerStorage, controllerStatusStorage := controlleretcd.NewREST(dbClient("replicationControllers"), storageDecorator)
 
 	// TODO: Factor out the core API registration
 	m.storage = map[string]rest.Storage{
@@ -665,24 +660,24 @@ func (m *Master) init(c *Config) {
 		if err != nil {
 			glog.Fatalf("Unable to setup experimental api: %v", err)
 		}
-		expAPIVersions := []unversioned.GroupVersion{
+		expAPIVersions := []unversioned.GroupVersionForDiscovery{
 			{
-				GroupVersion: expVersion.Version,
-				Version:      apiutil.GetVersion(expVersion.Version),
+				GroupVersion: expVersion.GroupVersion.String(),
+				Version:      expVersion.GroupVersion.Version,
 			},
 		}
-		storageVersion, found := c.StorageVersions[g.Group]
+		storageVersion, found := c.StorageVersions[g.GroupVersion.Group]
 		if !found {
-			glog.Fatalf("Couldn't find storage version of group %v", g.Group)
+			glog.Fatalf("Couldn't find storage version of group %v", g.GroupVersion.Group)
 		}
 		group := unversioned.APIGroup{
-			Name:             g.Group,
+			Name:             g.GroupVersion.Group,
 			Versions:         expAPIVersions,
-			PreferredVersion: unversioned.GroupVersion{GroupVersion: storageVersion, Version: apiutil.GetVersion(storageVersion)},
+			PreferredVersion: unversioned.GroupVersionForDiscovery{GroupVersion: storageVersion, Version: apiutil.GetVersion(storageVersion)},
 		}
-		apiserver.AddGroupWebService(m.handlerContainer, c.APIGroupPrefix+"/"+latest.GroupOrDie("extensions").Group, group)
+		apiserver.AddGroupWebService(m.handlerContainer, c.APIGroupPrefix+"/"+latest.GroupOrDie("extensions").GroupVersion.Group, group)
 		allGroups = append(allGroups, group)
-		apiserver.InstallServiceErrorHandler(m.handlerContainer, m.newRequestInfoResolver(), []string{expVersion.Version})
+		apiserver.InstallServiceErrorHandler(m.handlerContainer, m.newRequestInfoResolver(), []string{expVersion.GroupVersion.String()})
 	}
 
 	// This should be done after all groups are registered
@@ -710,20 +705,11 @@ func (m *Master) init(c *Config) {
 	}
 
 	handler := http.Handler(m.mux.(*http.ServeMux))
+	insecureHandler := handler
 
 	// TODO: handle CORS and auth using go-restful
 	// See github.com/emicklei/go-restful/blob/master/examples/restful-CORS-filter.go, and
 	// github.com/emicklei/go-restful/blob/master/examples/restful-basic-authentication.go
-
-	if len(c.CorsAllowedOriginList) > 0 {
-		allowedOriginRegexps, err := util.CompileRegexps(c.CorsAllowedOriginList)
-		if err != nil {
-			glog.Fatalf("Invalid CORS allowed origin, --cors-allowed-origins flag was set to %v - %v", strings.Join(c.CorsAllowedOriginList, ","), err)
-		}
-		handler = apiserver.CORS(handler, allowedOriginRegexps, nil, nil, "true")
-	}
-
-	m.InsecureHandler = handler
 
 	attributeGetter := apiserver.NewRequestAttributeGetter(m.requestContextMapper, m.newRequestInfoResolver())
 	handler = apiserver.WithAuthorizationCheck(handler, attributeGetter, m.authorizer)
@@ -736,6 +722,19 @@ func (m *Master) init(c *Config) {
 		}
 		handler = authenticatedHandler
 	}
+
+	// Since OPTIONS request cannot carry authn headers (by w3c standards), we are doing CORS check
+	// before auth check. Otherwise all the CORS request will be rejected.
+	if len(c.CorsAllowedOriginList) > 0 {
+		allowedOriginRegexps, err := util.CompileRegexps(c.CorsAllowedOriginList)
+		if err != nil {
+			glog.Fatalf("Invalid CORS allowed origin, --cors-allowed-origins flag was set to %v - %v", strings.Join(c.CorsAllowedOriginList, ","), err)
+		}
+		handler = apiserver.CORS(handler, allowedOriginRegexps, nil, nil, "true")
+		insecureHandler = apiserver.CORS(insecureHandler, allowedOriginRegexps, nil, nil, "true")
+	}
+
+	m.InsecureHandler = insecureHandler
 
 	// Install root web services
 	m.handlerContainer.Add(m.rootWebService)
@@ -850,7 +849,7 @@ func (m *Master) getServersToValidate(c *Config) map[string]apiserver.Server {
 			addr = etcdUrl.Host
 			port = 4001
 		}
-		serversToValidate[fmt.Sprintf("etcd-%d", ix)] = apiserver.Server{Addr: addr, Port: port, Path: "/health", Validate: etcdstorage.EtcdHealthCheck}
+		serversToValidate[fmt.Sprintf("etcd-%d", ix)] = apiserver.Server{Addr: addr, Port: port, Path: "/health", Validate: etcdutil.EtcdHealthCheck}
 	}
 	return serversToValidate
 }
@@ -889,7 +888,7 @@ func (m *Master) api_v1() *apiserver.APIGroupVersion {
 	}
 	version := m.defaultAPIGroupVersion()
 	version.Storage = storage
-	version.Version = "v1"
+	version.GroupVersion = unversioned.GroupVersion{Version: "v1"}
 	version.Codec = v1.Codec
 	return version
 }
@@ -992,22 +991,22 @@ func (m *Master) InstallThirdPartyResource(rsrc *expapi.ThirdPartyResource) erro
 		glog.Fatalf("Unable to setup thirdparty api: %v", err)
 	}
 	path := makeThirdPartyPath(group)
-	groupVersion := unversioned.GroupVersion{
+	groupVersion := unversioned.GroupVersionForDiscovery{
 		GroupVersion: group + "/" + rsrc.Versions[0].Name,
 		Version:      rsrc.Versions[0].Name,
 	}
 	apiGroup := unversioned.APIGroup{
 		Name:     group,
-		Versions: []unversioned.GroupVersion{groupVersion},
+		Versions: []unversioned.GroupVersionForDiscovery{groupVersion},
 	}
 	apiserver.AddGroupWebService(m.handlerContainer, path, apiGroup)
 	m.addThirdPartyResourceStorage(path, thirdparty.Storage[strings.ToLower(kind)+"s"].(*thirdpartyresourcedataetcd.REST))
-	apiserver.InstallServiceErrorHandler(m.handlerContainer, m.newRequestInfoResolver(), []string{thirdparty.Version})
+	apiserver.InstallServiceErrorHandler(m.handlerContainer, m.newRequestInfoResolver(), []string{thirdparty.GroupVersion.String()})
 	return nil
 }
 
 func (m *Master) thirdpartyapi(group, kind, version string) *apiserver.APIGroupVersion {
-	resourceStorage := thirdpartyresourcedataetcd.NewREST(m.thirdPartyStorage, storage.NoDecoration, group, kind)
+	resourceStorage := thirdpartyresourcedataetcd.NewREST(m.thirdPartyStorage, generic.UndecoratedStorage, group, kind)
 
 	apiRoot := makeThirdPartyPath("")
 
@@ -1015,20 +1014,22 @@ func (m *Master) thirdpartyapi(group, kind, version string) *apiserver.APIGroupV
 		strings.ToLower(kind) + "s": resourceStorage,
 	}
 
+	serverGroupVersion := latest.GroupOrDie("").GroupVersion
+
 	return &apiserver.APIGroupVersion{
 		Root:                apiRoot,
-		Version:             apiutil.GetGroupVersion(group, version),
+		GroupVersion:        unversioned.GroupVersion{Group: group, Version: version},
 		RequestInfoResolver: m.newRequestInfoResolver(),
 
 		Creater:   thirdpartyresourcedata.NewObjectCreator(group, version, api.Scheme),
 		Convertor: api.Scheme,
 		Typer:     api.Scheme,
 
-		Mapper:        thirdpartyresourcedata.NewMapper(latest.GroupOrDie("extensions").RESTMapper, kind, version, group),
-		Codec:         thirdpartyresourcedata.NewCodec(latest.GroupOrDie("extensions").Codec, kind),
-		Linker:        latest.GroupOrDie("extensions").SelfLinker,
-		Storage:       storage,
-		ServerVersion: latest.GroupOrDie("").GroupVersion,
+		Mapper:             thirdpartyresourcedata.NewMapper(latest.GroupOrDie("extensions").RESTMapper, kind, version, group),
+		Codec:              thirdpartyresourcedata.NewCodec(latest.GroupOrDie("extensions").Codec, kind),
+		Linker:             latest.GroupOrDie("extensions").SelfLinker,
+		Storage:            storage,
+		ServerGroupVersion: &serverGroupVersion,
 
 		Context: m.requestContextMapper,
 
@@ -1039,7 +1040,7 @@ func (m *Master) thirdpartyapi(group, kind, version string) *apiserver.APIGroupV
 // experimental returns the resources and codec for the experimental api
 func (m *Master) experimental(c *Config) *apiserver.APIGroupVersion {
 	// All resources except these are disabled by default.
-	enabledResources := utilsets.NewString("jobs", "horizontalpodautoscalers", "ingresses")
+	enabledResources := sets.NewString("jobs", "horizontalpodautoscalers", "ingresses")
 	resourceOverrides := m.apiGroupVersionOverrides["extensions/v1beta1"].ResourceOverrides
 	isEnabled := func(resource string) bool {
 		// Check if the resource has been overriden.
@@ -1049,22 +1050,22 @@ func (m *Master) experimental(c *Config) *apiserver.APIGroupVersion {
 		}
 		return enabled
 	}
-	storageFactory := c.storageFactory()
+	storageDecorator := c.storageDecorator()
 	dbClient := func(resource string) storage.Interface {
 		return c.StorageDestinations.get("extensions", resource)
 	}
 
 	storage := map[string]rest.Storage{}
 	if isEnabled("horizontalpodautoscalers") {
-		autoscalerStorage, autoscalerStatusStorage := horizontalpodautoscaleretcd.NewREST(dbClient("horizontalpodautoscalers"), storageFactory)
+		autoscalerStorage, autoscalerStatusStorage := horizontalpodautoscaleretcd.NewREST(dbClient("horizontalpodautoscalers"), storageDecorator)
 		storage["horizontalpodautoscalers"] = autoscalerStorage
 		storage["horizontalpodautoscalers/status"] = autoscalerStatusStorage
-		controllerStorage := expcontrolleretcd.NewStorage(c.StorageDestinations.get("", "replicationControllers"), storageFactory)
+		controllerStorage := expcontrolleretcd.NewStorage(c.StorageDestinations.get("", "replicationControllers"), storageDecorator)
 		storage["replicationcontrollers"] = controllerStorage.ReplicationController
 		storage["replicationcontrollers/scale"] = controllerStorage.Scale
 	}
 	if isEnabled("thirdpartyresources") {
-		thirdPartyResourceStorage := thirdpartyresourceetcd.NewREST(dbClient("thirdpartyresources"), storageFactory)
+		thirdPartyResourceStorage := thirdpartyresourceetcd.NewREST(dbClient("thirdpartyresources"), storageDecorator)
 		thirdPartyControl := ThirdPartyController{
 			master: m,
 			thirdPartyResourceRegistry: thirdPartyResourceStorage,
@@ -1081,28 +1082,29 @@ func (m *Master) experimental(c *Config) *apiserver.APIGroupVersion {
 	}
 
 	if isEnabled("daemonsets") {
-		daemonSetStorage, daemonSetStatusStorage := daemonetcd.NewREST(dbClient("daemonsets"), storageFactory)
+		daemonSetStorage, daemonSetStatusStorage := daemonetcd.NewREST(dbClient("daemonsets"), storageDecorator)
 		storage["daemonsets"] = daemonSetStorage
 		storage["daemonsets/status"] = daemonSetStatusStorage
 	}
 	if isEnabled("deployments") {
-		deploymentStorage := deploymentetcd.NewStorage(dbClient("deployments"), storageFactory)
+		deploymentStorage := deploymentetcd.NewStorage(dbClient("deployments"), storageDecorator)
 		storage["deployments"] = deploymentStorage.Deployment
 		storage["deployments/status"] = deploymentStorage.Status
 		storage["deployments/scale"] = deploymentStorage.Scale
 	}
 	if isEnabled("jobs") {
-		jobStorage, jobStatusStorage := jobetcd.NewREST(dbClient("jobs"), storageFactory)
+		jobStorage, jobStatusStorage := jobetcd.NewREST(dbClient("jobs"), storageDecorator)
 		storage["jobs"] = jobStorage
 		storage["jobs/status"] = jobStatusStorage
 	}
 	if isEnabled("ingresses") {
-		ingressStorage, ingressStatusStorage := ingressetcd.NewREST(dbClient("ingresses"), storageFactory)
+		ingressStorage, ingressStatusStorage := ingressetcd.NewREST(dbClient("ingresses"), storageDecorator)
 		storage["ingresses"] = ingressStorage
 		storage["ingresses/status"] = ingressStatusStorage
 	}
 
 	extensionsGroup := latest.GroupOrDie("extensions")
+	serverGroupVersion := latest.GroupOrDie("").GroupVersion
 
 	return &apiserver.APIGroupVersion{
 		Root:                m.apiGroupPrefix,
@@ -1112,12 +1114,12 @@ func (m *Master) experimental(c *Config) *apiserver.APIGroupVersion {
 		Convertor: api.Scheme,
 		Typer:     api.Scheme,
 
-		Mapper:        extensionsGroup.RESTMapper,
-		Codec:         extensionsGroup.Codec,
-		Linker:        extensionsGroup.SelfLinker,
-		Storage:       storage,
-		Version:       extensionsGroup.GroupVersion,
-		ServerVersion: latest.GroupOrDie("").GroupVersion,
+		Mapper:             extensionsGroup.RESTMapper,
+		Codec:              extensionsGroup.Codec,
+		Linker:             extensionsGroup.SelfLinker,
+		Storage:            storage,
+		GroupVersion:       extensionsGroup.GroupVersion,
+		ServerGroupVersion: &serverGroupVersion,
 
 		Admit:   m.admissionControl,
 		Context: m.requestContextMapper,

@@ -48,6 +48,10 @@ import (
 // are therefore not allowed to set manually.
 var specialParams = sets.NewString("timeout")
 
+func init() {
+	metrics.Register()
+}
+
 // HTTPClient is an interface for testing a request object.
 type HTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
@@ -109,7 +113,6 @@ type Request struct {
 // NewRequest creates a new request helper object for accessing runtime.Objects on a server.
 func NewRequest(client HTTPClient, verb string, baseURL *url.URL, apiVersion string,
 	codec runtime.Codec) *Request {
-	metrics.Register()
 	return &Request{
 		client:     client,
 		verb:       verb,
@@ -223,23 +226,6 @@ func (r *Request) NamespaceIfScoped(namespace string, scoped bool) *Request {
 	if scoped {
 		return r.Namespace(namespace)
 	}
-	return r
-}
-
-// UnversionedPath strips the apiVersion from the baseURL before appending segments.
-func (r *Request) UnversionedPath(segments ...string) *Request {
-	if r.err != nil {
-		return r
-	}
-	upath := path.Clean(r.baseURL.Path)
-	//TODO(jdef) this is a pretty hackish version test
-	if strings.HasPrefix(path.Base(upath), "v") {
-		upath = path.Dir(upath)
-		if upath == "." {
-			upath = "/"
-		}
-	}
-	r.path = path.Join(append([]string{upath}, segments...)...)
 	return r
 }
 
@@ -441,8 +427,42 @@ func (r *Request) VersionedParams(obj runtime.Object, convertor runtime.ObjectCo
 		return r
 	}
 	for k, v := range params {
-		for _, vv := range v {
-			r.setParam(k, vv)
+		for _, value := range v {
+			// TODO: Move it to setParam method, once we get rid of
+			// FieldSelectorParam & LabelSelectorParam methods.
+			if k == unversioned.LabelSelectorQueryParam(r.apiVersion) && value == "" {
+				// Don't set an empty selector for backward compatibility.
+				// Since there is no way to get the difference between empty
+				// and unspecified string, we don't set it to avoid having
+				// labelSelector= param in every request.
+				continue
+			}
+			if k == unversioned.FieldSelectorQueryParam(r.apiVersion) {
+				if value == "" {
+					// Don't set an empty selector for backward compatibility.
+					// Since there is no way to get the difference between empty
+					// and unspecified string, we don't set it to avoid having
+					// fieldSelector= param in every request.
+					continue
+				}
+				// TODO: Filtering should be handled somewhere else.
+				selector, err := fields.ParseSelector(value)
+				if err != nil {
+					r.err = fmt.Errorf("unparsable field selector: %v", err)
+					return r
+				}
+				filteredSelector, err := selector.Transform(
+					func(field, value string) (newField, newValue string, err error) {
+						return fieldMappings.filterField(r.apiVersion, r.resource, field, value)
+					})
+				if err != nil {
+					r.err = fmt.Errorf("untransformable field selector: %v", err)
+					return r
+				}
+				value = filteredSelector.String()
+			}
+
+			r.setParam(k, value)
 		}
 	}
 	return r
@@ -475,19 +495,6 @@ func (r *Request) Timeout(d time.Duration) *Request {
 		return r
 	}
 	r.timeout = d
-	return r
-}
-
-// Timeout makes the request use the given duration as a timeout. Sets the "timeoutSeconds"
-// parameter.
-func (r *Request) TimeoutSeconds(d time.Duration) *Request {
-	if r.err != nil {
-		return r
-	}
-	if d != 0 {
-		timeout := int64(d.Seconds())
-		r.Param("timeoutSeconds", strconv.FormatInt(timeout, 10))
-	}
 	return r
 }
 
@@ -603,6 +610,7 @@ func (r *Request) Watch() (watch.Interface, error) {
 		client = http.DefaultClient
 	}
 	resp, err := client.Do(req)
+	updateURLMetrics(r, resp, err)
 	if err != nil {
 		// The watch stream mechanism handles many common partial data errors, so closed
 		// connections can be retried in many cases.
@@ -618,6 +626,23 @@ func (r *Request) Watch() (watch.Interface, error) {
 		return nil, fmt.Errorf("for request '%+v', got status: %v", url, resp.StatusCode)
 	}
 	return watch.NewStreamWatcher(watchjson.NewDecoder(resp.Body, r.codec)), nil
+}
+
+// updateURLMetrics is a convenience function for pushing metrics.
+// It also handles corner cases for incomplete/invalid request data.
+func updateURLMetrics(req *Request, resp *http.Response, err error) {
+	url := "none"
+	if req.baseURL != nil {
+		url = req.baseURL.Host
+	}
+
+	// If we have an error (i.e. apiserver down) we report that as a metric label.
+	if err != nil {
+		metrics.RequestResult.WithLabelValues(err.Error(), req.verb, url).Inc()
+	} else {
+		//Metrics for failure codes
+		metrics.RequestResult.WithLabelValues(strconv.Itoa(resp.StatusCode), req.verb, url).Inc()
+	}
 }
 
 // Stream formats and executes the request, and offers streaming of the response.
@@ -638,6 +663,7 @@ func (r *Request) Stream() (io.ReadCloser, error) {
 		client = http.DefaultClient
 	}
 	resp, err := client.Do(req)
+	updateURLMetrics(r, resp, err)
 	if err != nil {
 		return nil, err
 	}
@@ -674,6 +700,12 @@ func (r *Request) Stream() (io.ReadCloser, error) {
 // fn at most once. It will return an error if a problem occurred prior to connecting to the
 // server - the provided function is responsible for handling server errors.
 func (r *Request) request(fn func(*http.Request, *http.Response)) error {
+	//Metrics for total request latency
+	start := time.Now()
+	defer func() {
+		metrics.RequestLatency.WithLabelValues(r.verb, r.finalURLTemplate()).Observe(metrics.SinceInMicroseconds(start))
+	}()
+
 	if r.err != nil {
 		return r.err
 	}
@@ -704,6 +736,7 @@ func (r *Request) request(fn func(*http.Request, *http.Response)) error {
 		req.Header = r.headers
 
 		resp, err := client.Do(req)
+		updateURLMetrics(r, resp, err)
 		if err != nil {
 			return err
 		}
@@ -737,10 +770,6 @@ func (r *Request) request(fn func(*http.Request, *http.Response)) error {
 //  * If the server responds with a status: *errors.StatusError or *errors.UnexpectedObjectError
 //  * http.Client.Do errors are returned directly.
 func (r *Request) Do() Result {
-	start := time.Now()
-	defer func() {
-		metrics.RequestLatency.WithLabelValues(r.verb, r.finalURLTemplate()).Observe(metrics.SinceInMicroseconds(start))
-	}()
 	var result Result
 	err := r.request(func(req *http.Request, resp *http.Response) {
 		result = r.transformResponse(resp, req)
@@ -753,10 +782,6 @@ func (r *Request) Do() Result {
 
 // DoRaw executes the request but does not process the response body.
 func (r *Request) DoRaw() ([]byte, error) {
-	start := time.Now()
-	defer func() {
-		metrics.RequestLatency.WithLabelValues(r.verb, r.finalURLTemplate()).Observe(metrics.SinceInMicroseconds(start))
-	}()
 	var result Result
 	err := r.request(func(req *http.Request, resp *http.Response) {
 		result.body, result.err = ioutil.ReadAll(resp.Body)
@@ -858,7 +883,10 @@ func isTextResponse(resp *http.Response) bool {
 // checkWait returns true along with a number of seconds if the server instructed us to wait
 // before retrying.
 func checkWait(resp *http.Response) (int, bool) {
-	if resp.StatusCode != errors.StatusTooManyRequests {
+	switch r := resp.StatusCode; {
+	// any 500 error code and 429 can trigger a wait
+	case r == errors.StatusTooManyRequests, r >= 500:
+	default:
 		return 0, false
 	}
 	i, ok := retryAfterSeconds(resp)

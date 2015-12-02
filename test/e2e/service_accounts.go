@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/fields"
 	"k8s.io/kubernetes/pkg/labels"
@@ -35,7 +36,6 @@ var _ = Describe("ServiceAccounts", func() {
 	f := NewFramework("svcaccounts")
 
 	It("should mount an API token into pods [Conformance]", func() {
-		var tokenName string
 		var tokenContent string
 		var rootCAContent string
 
@@ -43,7 +43,7 @@ var _ = Describe("ServiceAccounts", func() {
 		expectNoError(wait.Poll(time.Millisecond*500, time.Second*10, func() (bool, error) {
 			By("getting the auto-created API token")
 			tokenSelector := fields.SelectorFromSet(map[string]string{client.SecretType: string(api.SecretTypeServiceAccountToken)})
-			secrets, err := f.Client.Secrets(f.Namespace.Name).List(labels.Everything(), tokenSelector)
+			secrets, err := f.Client.Secrets(f.Namespace.Name).List(labels.Everything(), tokenSelector, unversioned.ListOptions{})
 			if err != nil {
 				return false, err
 			}
@@ -53,7 +53,6 @@ var _ = Describe("ServiceAccounts", func() {
 			if len(secrets.Items) > 1 {
 				return false, fmt.Errorf("Expected 1 token secret, got %d", len(secrets.Items))
 			}
-			tokenName = secrets.Items[0].Name
 			tokenContent = string(secrets.Items[0].Data[api.ServiceAccountTokenKey])
 			rootCAContent = string(secrets.Items[0].Data[api.ServiceAccountRootCAKey])
 			return true, nil

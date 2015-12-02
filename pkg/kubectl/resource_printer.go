@@ -217,7 +217,7 @@ func (p *NamePrinter) PrintObj(obj runtime.Object, w io.Writer) error {
 				if err != nil {
 					return err
 				}
-				decodedObj, err := scheme.DecodeToVersion(rawObj, "")
+				decodedObj, err := scheme.DecodeToVersion(rawObj, unversioned.GroupVersion{})
 				if err != nil {
 					return err
 				}
@@ -394,7 +394,7 @@ var ingressColumns = []string{"NAME", "RULE", "BACKEND", "ADDRESS"}
 var endpointColumns = []string{"NAME", "ENDPOINTS", "AGE"}
 var nodeColumns = []string{"NAME", "LABELS", "STATUS", "AGE"}
 var daemonSetColumns = []string{"NAME", "CONTAINER(S)", "IMAGE(S)", "SELECTOR", "NODE-SELECTOR"}
-var eventColumns = []string{"FIRSTSEEN", "LASTSEEN", "COUNT", "NAME", "KIND", "SUBOBJECT", "REASON", "SOURCE", "MESSAGE"}
+var eventColumns = []string{"FIRSTSEEN", "LASTSEEN", "COUNT", "NAME", "KIND", "SUBOBJECT", "TYPE", "REASON", "SOURCE", "MESSAGE"}
 var limitRangeColumns = []string{"NAME", "AGE"}
 var resourceQuotaColumns = []string{"NAME", "AGE"}
 var namespaceColumns = []string{"NAME", "LABELS", "STATUS", "AGE"}
@@ -931,11 +931,16 @@ func printDaemonSet(ds *extensions.DaemonSet, w io.Writer, withNamespace bool, w
 			return err
 		}
 	}
+	selector, err := extensions.PodSelectorAsSelector(ds.Spec.Selector)
+	if err != nil {
+		// this shouldn't happen if PodSelector passed validation
+		return err
+	}
 	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s",
 		name,
 		firstContainer.Name,
 		firstContainer.Image,
-		labels.FormatLabels(ds.Spec.Selector),
+		selector,
 		labels.FormatLabels(ds.Spec.Template.Spec.NodeSelector),
 	); err != nil {
 		return err
@@ -1198,13 +1203,14 @@ func printEvent(event *api.Event, w io.Writer, withNamespace bool, wide bool, sh
 		}
 	}
 	if _, err := fmt.Fprintf(
-		w, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s",
+		w, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
 		translateTimestamp(event.FirstTimestamp),
 		translateTimestamp(event.LastTimestamp),
 		event.Count,
 		event.InvolvedObject.Name,
 		event.InvolvedObject.Kind,
 		event.InvolvedObject.FieldPath,
+		event.Type,
 		event.Reason,
 		event.Source,
 		event.Message,
@@ -1541,11 +1547,11 @@ func (p *TemplatePrinter) PrintObj(obj runtime.Object, w io.Writer) error {
 		// It is way easier to debug this stuff when it shows up in
 		// stdout instead of just stdin. So in addition to returning
 		// a nice error, also print useful stuff with the writer.
-		fmt.Fprintf(w, "Error executing template: %v\n", err)
-		fmt.Fprintf(w, "template was:\n\t%v\n", p.rawTemplate)
-		fmt.Fprintf(w, "raw data was:\n\t%v\n", string(data))
-		fmt.Fprintf(w, "object given to template engine was:\n\t%+v\n", out)
-		return fmt.Errorf("error executing template '%v': '%v'\n----data----\n%+v\n", p.rawTemplate, err, out)
+		fmt.Fprintf(w, "Error executing template: %v. Printing more information for debugging the template:\n", err)
+		fmt.Fprintf(w, "\ttemplate was:\n\t\t%v\n", p.rawTemplate)
+		fmt.Fprintf(w, "\traw data was:\n\t\t%v\n", string(data))
+		fmt.Fprintf(w, "\tobject given to template engine was:\n\t\t%+v\n\n", out)
+		return fmt.Errorf("error executing template %q: %v", p.rawTemplate, err)
 	}
 	return nil
 }
@@ -1692,10 +1698,10 @@ func (j *JSONPathPrinter) PrintObj(obj runtime.Object, w io.Writer) error {
 	}
 
 	if err := j.JSONPath.Execute(w, queryObj); err != nil {
-		fmt.Fprintf(w, "Error executing template: %v\n", err)
-		fmt.Fprintf(w, "template was:\n\t%v\n", j.rawTemplate)
-		fmt.Fprintf(w, "object given to jsonpath engine was:\n\t%#v\n", queryObj)
-		return fmt.Errorf("error executing jsonpath '%v': '%v'\n----data----\n%+v\n", j.rawTemplate, err, obj)
+		fmt.Fprintf(w, "Error executing template: %v. Printing more information for debugging the template:\n", err)
+		fmt.Fprintf(w, "\ttemplate was:\n\t\t%v\n", j.rawTemplate)
+		fmt.Fprintf(w, "\tobject given to jsonpath engine was:\n\t\t%#v\n\n", queryObj)
+		return fmt.Errorf("error executing jsonpath %q: %v\n", j.rawTemplate, err)
 	}
 	return nil
 }

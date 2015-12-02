@@ -32,8 +32,8 @@ import (
 	execprobe "k8s.io/kubernetes/pkg/probe/exec"
 	httprobe "k8s.io/kubernetes/pkg/probe/http"
 	tcprobe "k8s.io/kubernetes/pkg/probe/tcp"
-	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/pkg/util/exec"
+	"k8s.io/kubernetes/pkg/util/intstr"
 
 	"github.com/golang/glog"
 )
@@ -96,12 +96,12 @@ func (pb *prober) probe(probeType probeType, pod *api.Pod, status api.PodStatus,
 		if err != nil {
 			glog.V(1).Infof("%s probe for %q errored: %v", probeType, ctrName, err)
 			if hasRef {
-				pb.recorder.Eventf(ref, "Unhealthy", "%s probe errored: %v", probeType, err)
+				pb.recorder.Eventf(ref, api.EventTypeWarning, kubecontainer.ContainerUnhealthy, "%s probe errored: %v", probeType, err)
 			}
 		} else { // result != probe.Success
 			glog.V(1).Infof("%s probe for %q failed (%v): %s", probeType, ctrName, result, output)
 			if hasRef {
-				pb.recorder.Eventf(ref, "Unhealthy", "%s probe failed: %s", probeType, output)
+				pb.recorder.Eventf(ref, api.EventTypeWarning, kubecontainer.ContainerUnhealthy, "%s probe failed: %s", probeType, output)
 			}
 		}
 		return results.Failure, err
@@ -118,8 +118,8 @@ func (pb *prober) runProbeWithRetries(p *api.Probe, pod *api.Pod, status api.Pod
 	var output string
 	for i := 0; i < retries; i++ {
 		result, output, err = pb.runProbe(p, pod, status, container, containerID)
-		if result == probe.Success {
-			return probe.Success, output, nil
+		if err == nil {
+			return result, output, nil
 		}
 	}
 	return result, output, err
@@ -158,13 +158,13 @@ func (pb *prober) runProbe(p *api.Probe, pod *api.Pod, status api.PodStatus, con
 	return probe.Unknown, "", fmt.Errorf("Missing probe handler for %s:%s", kubecontainer.GetPodFullName(pod), container.Name)
 }
 
-func extractPort(param util.IntOrString, container api.Container) (int, error) {
+func extractPort(param intstr.IntOrString, container api.Container) (int, error) {
 	port := -1
 	var err error
-	switch param.Kind {
-	case util.IntstrInt:
-		port = param.IntVal
-	case util.IntstrString:
+	switch param.Type {
+	case intstr.Int:
+		port = param.IntValue()
+	case intstr.String:
 		if port, err = findPortByName(container, param.StrVal); err != nil {
 			// Last ditch effort - maybe it was an int stored as string?
 			if port, err = strconv.Atoi(param.StrVal); err != nil {

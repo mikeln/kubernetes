@@ -74,6 +74,7 @@ func TestEventCreate(t *testing.T) {
 		FirstTimestamp: timeStamp,
 		LastTimestamp:  timeStamp,
 		Count:          1,
+		Type:           api.EventTypeNormal,
 	}
 	c := &testClient{
 		Request: testRequest{
@@ -113,6 +114,7 @@ func TestEventGet(t *testing.T) {
 		FirstTimestamp: timeStamp,
 		LastTimestamp:  timeStamp,
 		Count:          1,
+		Type:           api.EventTypeNormal,
 	}
 	c := &testClient{
 		Request: testRequest{
@@ -152,6 +154,7 @@ func TestEventList(t *testing.T) {
 				FirstTimestamp: timeStamp,
 				LastTimestamp:  timeStamp,
 				Count:          1,
+				Type:           api.EventTypeNormal,
 			},
 		},
 	}
@@ -164,7 +167,7 @@ func TestEventList(t *testing.T) {
 		Response: Response{StatusCode: 200, Body: eventList},
 	}
 	response, err := c.Setup(t).Events(ns).List(labels.Everything(),
-		fields.Everything())
+		fields.Everything(), unversioned.ListOptions{})
 
 	if err != nil {
 		t.Errorf("%#v should be nil.", err)

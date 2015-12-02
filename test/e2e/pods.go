@@ -30,11 +30,13 @@ import (
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/errors"
 	"k8s.io/kubernetes/pkg/api/resource"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/fields"
 	"k8s.io/kubernetes/pkg/kubelet"
 	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/util"
+	"k8s.io/kubernetes/pkg/util/intstr"
 	"k8s.io/kubernetes/pkg/util/wait"
 	"k8s.io/kubernetes/pkg/watch"
 
@@ -219,7 +221,7 @@ var _ = Describe("Pods", func() {
 				Containers: []api.Container{
 					{
 						Name:  "test",
-						Image: "beta.gcr.io/google_containers/pause:2.0",
+						Image: "gcr.io/google_containers/pause:2.0",
 					},
 				},
 			},
@@ -244,7 +246,7 @@ var _ = Describe("Pods", func() {
 				Containers: []api.Container{
 					{
 						Name:  "nginx",
-						Image: "beta.gcr.io/google_containers/pause:2.0",
+						Image: "gcr.io/google_containers/pause:2.0",
 						Resources: api.ResourceRequirements{
 							Limits: api.ResourceList{
 								api.ResourceCPU:    *resource.NewMilliQuantity(100, resource.DecimalSI),
@@ -287,7 +289,7 @@ var _ = Describe("Pods", func() {
 							Handler: api.Handler{
 								HTTPGet: &api.HTTPGetAction{
 									Path: "/index.html",
-									Port: util.NewIntOrStringFromInt(8080),
+									Port: intstr.FromInt(8080),
 								},
 							},
 							InitialDelaySeconds: 30,
@@ -298,14 +300,16 @@ var _ = Describe("Pods", func() {
 		}
 
 		By("setting up watch")
-		pods, err := podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})), fields.Everything())
+		pods, err := podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})), fields.Everything(), unversioned.ListOptions{})
 		if err != nil {
 			Failf("Failed to query for pods: %v", err)
 		}
 		Expect(len(pods.Items)).To(Equal(0))
-		w, err := podClient.Watch(
-			labels.SelectorFromSet(labels.Set(map[string]string{"time": value})), fields.Everything(),
-			api.ListOptions{ResourceVersion: pods.ListMeta.ResourceVersion})
+		options := unversioned.ListOptions{
+			LabelSelector:   unversioned.LabelSelector{labels.SelectorFromSet(labels.Set(map[string]string{"time": value}))},
+			ResourceVersion: pods.ListMeta.ResourceVersion,
+		}
+		w, err := podClient.Watch(options)
 		if err != nil {
 			Failf("Failed to set up watch: %v", err)
 		}
@@ -321,7 +325,7 @@ var _ = Describe("Pods", func() {
 		}
 
 		By("verifying the pod is in kubernetes")
-		pods, err = podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})), fields.Everything())
+		pods, err = podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})), fields.Everything(), unversioned.ListOptions{})
 		if err != nil {
 			Failf("Failed to query for pods: %v", err)
 		}
@@ -365,7 +369,7 @@ var _ = Describe("Pods", func() {
 		Expect(lastPod.DeletionTimestamp).ToNot(BeNil())
 		Expect(lastPod.Spec.TerminationGracePeriodSeconds).ToNot(BeZero())
 
-		pods, err = podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})), fields.Everything())
+		pods, err = podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})), fields.Everything(), unversioned.ListOptions{})
 		if err != nil {
 			Fail(fmt.Sprintf("Failed to list pods to verify deletion: %v", err))
 		}
@@ -396,7 +400,7 @@ var _ = Describe("Pods", func() {
 							Handler: api.Handler{
 								HTTPGet: &api.HTTPGetAction{
 									Path: "/index.html",
-									Port: util.NewIntOrStringFromInt(8080),
+									Port: intstr.FromInt(8080),
 								},
 							},
 							InitialDelaySeconds: 30,
@@ -419,7 +423,7 @@ var _ = Describe("Pods", func() {
 		expectNoError(framework.WaitForPodRunning(pod.Name))
 
 		By("verifying the pod is in kubernetes")
-		pods, err := podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})), fields.Everything())
+		pods, err := podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})), fields.Everything(), unversioned.ListOptions{})
 		Expect(len(pods.Items)).To(Equal(1))
 
 		// Standard get, update retry loop
@@ -449,7 +453,7 @@ var _ = Describe("Pods", func() {
 		expectNoError(framework.WaitForPodRunning(pod.Name))
 
 		By("verifying the updated pod is in kubernetes")
-		pods, err = podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})), fields.Everything())
+		pods, err = podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})), fields.Everything(), unversioned.ListOptions{})
 		Expect(len(pods.Items)).To(Equal(1))
 		Logf("Pod update OK")
 	})
@@ -498,7 +502,7 @@ var _ = Describe("Pods", func() {
 			Spec: api.ServiceSpec{
 				Ports: []api.ServicePort{{
 					Port:       8765,
-					TargetPort: util.NewIntOrStringFromInt(8080),
+					TargetPort: intstr.FromInt(8080),
 				}},
 				Selector: map[string]string{
 					"name": serverName,
@@ -560,6 +564,7 @@ var _ = Describe("Pods", func() {
 								},
 							},
 							InitialDelaySeconds: 15,
+							FailureThreshold:    1,
 						},
 					},
 				},
@@ -586,6 +591,7 @@ var _ = Describe("Pods", func() {
 								},
 							},
 							InitialDelaySeconds: 15,
+							FailureThreshold:    1,
 						},
 					},
 				},
@@ -609,10 +615,11 @@ var _ = Describe("Pods", func() {
 							Handler: api.Handler{
 								HTTPGet: &api.HTTPGetAction{
 									Path: "/healthz",
-									Port: util.NewIntOrStringFromInt(8080),
+									Port: intstr.FromInt(8080),
 								},
 							},
 							InitialDelaySeconds: 15,
+							FailureThreshold:    1,
 						},
 					},
 				},
@@ -636,10 +643,11 @@ var _ = Describe("Pods", func() {
 							Handler: api.Handler{
 								HTTPGet: &api.HTTPGetAction{
 									Path: "/healthz",
-									Port: util.NewIntOrStringFromInt(8080),
+									Port: intstr.FromInt(8080),
 								},
 							},
 							InitialDelaySeconds: 5,
+							FailureThreshold:    1,
 						},
 					},
 				},
@@ -669,10 +677,11 @@ var _ = Describe("Pods", func() {
 							Handler: api.Handler{
 								HTTPGet: &api.HTTPGetAction{
 									Path: "/read",
-									Port: util.NewIntOrStringFromInt(8080),
+									Port: intstr.FromInt(8080),
 								},
 							},
 							InitialDelaySeconds: 15,
+							FailureThreshold:    1,
 						},
 					},
 				},
@@ -1030,7 +1039,7 @@ var _ = Describe("Pods", func() {
 			expectNoError(framework.WaitForPodRunning(pod.Name))
 
 			By("verifying the pod is in kubernetes")
-			pods, err := podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})))
+			pods, err := podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})), fields.Everything(), unversioned.ListOptions{})
 			if err != nil {
 				Failf("Failed to query for pods: %v", err)
 			}
@@ -1103,7 +1112,7 @@ var _ = Describe("Pods", func() {
 			expectNoError(framework.WaitForPodRunning(pod.Name))
 
 			By("verifying the pod is in kubernetes")
-			pods, err := podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})))
+			pods, err := podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})), fields.Everything(), unversioned.ListOptions{})
 			if err != nil {
 				Failf("Failed to query for pods: %v", err)
 			}

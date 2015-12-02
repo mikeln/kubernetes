@@ -54,6 +54,8 @@ import (
 // logic specific to the API.
 //
 // TODO: make the default exposed methods exactly match a generic RESTStorage
+// TODO: because all aspects of etcd have been removed it should really
+//       just be called a registry implementation.
 type Etcd struct {
 	// Called to make a new object, should return e.g., &api.Pod{}
 	NewFunc func() runtime.Object
@@ -159,20 +161,20 @@ func (e *Etcd) NewList() runtime.Object {
 }
 
 // List returns a list of items matching labels and field
-func (e *Etcd) List(ctx api.Context, options *api.ListOptions) (runtime.Object, error) {
+func (e *Etcd) List(ctx api.Context, options *unversioned.ListOptions) (runtime.Object, error) {
 	label := labels.Everything()
-	if options != nil && options.LabelSelector != nil {
-		label = options.LabelSelector
+	if options != nil && options.LabelSelector.Selector != nil {
+		label = options.LabelSelector.Selector
 	}
 	field := fields.Everything()
-	if options != nil && options.FieldSelector != nil {
-		field = options.FieldSelector
+	if options != nil && options.FieldSelector.Selector != nil {
+		field = options.FieldSelector.Selector
 	}
 	return e.ListPredicate(ctx, e.PredicateFunc(label, field), options)
 }
 
 // ListPredicate returns a list of all the items matching m.
-func (e *Etcd) ListPredicate(ctx api.Context, m generic.Matcher, options *api.ListOptions) (runtime.Object, error) {
+func (e *Etcd) ListPredicate(ctx api.Context, m generic.Matcher, options *unversioned.ListOptions) (runtime.Object, error) {
 	list := e.NewListFunc()
 	trace := util.NewTrace("List " + reflect.TypeOf(list).String())
 	filterFunc := e.filterAndDecorateFunction(m)
@@ -182,17 +184,14 @@ func (e *Etcd) ListPredicate(ctx api.Context, m generic.Matcher, options *api.Li
 			trace.Step("About to read single object")
 			err := e.Storage.GetToList(ctx, key, filterFunc, list)
 			trace.Step("Object extracted")
-			if err != nil {
-				return nil, err
-			}
-			return list, nil
+			return list, etcderr.InterpretListError(err, e.EndpointName)
 		}
 		// if we cannot extract a key based on the current context, the optimization is skipped
 	}
 
 	trace.Step("About to list directory")
 	if options == nil {
-		options = &api.ListOptions{ResourceVersion: "0"}
+		options = &unversioned.ListOptions{ResourceVersion: "0"}
 	}
 	version, err := storage.ParseWatchResourceVersion(options.ResourceVersion, e.EndpointName)
 	if err != nil {
@@ -200,10 +199,7 @@ func (e *Etcd) ListPredicate(ctx api.Context, m generic.Matcher, options *api.Li
 	}
 	err = e.Storage.List(ctx, e.KeyRootFunc(ctx), version, filterFunc, list)
 	trace.Step("List extracted")
-	if err != nil {
-		return nil, err
-	}
-	return list, nil
+	return list, etcderr.InterpretListError(err, e.EndpointName)
 }
 
 // Create inserts a new item according to the unique key from the object.
@@ -471,14 +467,14 @@ func (e *Etcd) finalizeDelete(obj runtime.Object, runHooks bool) (runtime.Object
 // WatchPredicate. If possible, you should customize PredicateFunc to produre a
 // matcher that matches by key. generic.SelectionPredicate does this for you
 // automatically.
-func (e *Etcd) Watch(ctx api.Context, options *api.ListOptions) (watch.Interface, error) {
+func (e *Etcd) Watch(ctx api.Context, options *unversioned.ListOptions) (watch.Interface, error) {
 	label := labels.Everything()
-	if options != nil && options.LabelSelector != nil {
-		label = options.LabelSelector
+	if options != nil && options.LabelSelector.Selector != nil {
+		label = options.LabelSelector.Selector
 	}
 	field := fields.Everything()
-	if options != nil && options.FieldSelector != nil {
-		field = options.FieldSelector
+	if options != nil && options.FieldSelector.Selector != nil {
+		field = options.FieldSelector.Selector
 	}
 	resourceVersion := ""
 	if options != nil {

@@ -40,8 +40,8 @@ import (
 )
 
 func init() {
-	api.Scheme.AddKnownTypes("", &kubectltesting.TestStruct{})
-	api.Scheme.AddKnownTypes(testapi.Default.Version(), &kubectltesting.TestStruct{})
+	api.Scheme.AddKnownTypes(testapi.Default.InternalGroupVersion(), &kubectltesting.TestStruct{})
+	api.Scheme.AddKnownTypes(*testapi.Default.GroupVersion(), &kubectltesting.TestStruct{})
 }
 
 var testData = kubectltesting.TestStruct{
@@ -507,6 +507,7 @@ func TestPrintEventsResultSorted(t *testing.T) {
 				FirstTimestamp: unversioned.NewTime(time.Date(2014, time.January, 15, 0, 0, 0, 0, time.UTC)),
 				LastTimestamp:  unversioned.NewTime(time.Date(2014, time.January, 15, 0, 0, 0, 0, time.UTC)),
 				Count:          1,
+				Type:           api.EventTypeNormal,
 			},
 			{
 				Source:         api.EventSource{Component: "scheduler"},
@@ -514,6 +515,7 @@ func TestPrintEventsResultSorted(t *testing.T) {
 				FirstTimestamp: unversioned.NewTime(time.Date(1987, time.June, 17, 0, 0, 0, 0, time.UTC)),
 				LastTimestamp:  unversioned.NewTime(time.Date(1987, time.June, 17, 0, 0, 0, 0, time.UTC)),
 				Count:          1,
+				Type:           api.EventTypeNormal,
 			},
 			{
 				Source:         api.EventSource{Component: "kubelet"},
@@ -521,6 +523,7 @@ func TestPrintEventsResultSorted(t *testing.T) {
 				FirstTimestamp: unversioned.NewTime(time.Date(2002, time.December, 25, 0, 0, 0, 0, time.UTC)),
 				LastTimestamp:  unversioned.NewTime(time.Date(2002, time.December, 25, 0, 0, 0, 0, time.UTC)),
 				Count:          1,
+				Type:           api.EventTypeNormal,
 			},
 		},
 	}
@@ -902,6 +905,7 @@ func TestPrintHumanReadableWithNamespace(t *testing.T) {
 				FirstTimestamp: unversioned.NewTime(time.Date(2014, time.January, 15, 0, 0, 0, 0, time.UTC)),
 				LastTimestamp:  unversioned.NewTime(time.Date(2014, time.January, 15, 0, 0, 0, 0, time.UTC)),
 				Count:          1,
+				Type:           api.EventTypeNormal,
 			},
 			isNamespaced: true,
 		},
@@ -1213,7 +1217,6 @@ func TestTranslateTimestamp(t *testing.T) {
 		{"5 minutes ago", translateTimestamp(unversioned.Time{Time: time.Now().Add(-3e11)}), "5m"},
 		{"an hour ago", translateTimestamp(unversioned.Time{Time: time.Now().Add(-6e12)}), "1h"},
 		{"2 days ago", translateTimestamp(unversioned.Time{Time: time.Now().AddDate(0, 0, -2)}), "2d"},
-		{"months ago", translateTimestamp(unversioned.Time{Time: time.Now().AddDate(0, -3, 0)}), "92d"},
 		{"10 years ago", translateTimestamp(unversioned.Time{Time: time.Now().AddDate(-10, 0, 0)}), "10y"},
 	}
 	for _, test := range tl {

@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/types"
 	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/pkg/volume"
 )
@@ -33,8 +34,10 @@ type FakeRuntime struct {
 	sync.Mutex
 	CalledFunctions   []string
 	PodList           []*Pod
+	AllPodList        []*Pod
 	ImageList         []Image
 	PodStatus         api.PodStatus
+	RawPodStatus      RawPodStatus
 	StartedPods       []string
 	KilledPods        []string
 	StartedContainers []string
@@ -89,6 +92,7 @@ func (f *FakeRuntime) ClearCalls() {
 
 	f.CalledFunctions = []string{}
 	f.PodList = []*Pod{}
+	f.AllPodList = []*Pod{}
 	f.PodStatus = api.PodStatus{}
 	f.StartedPods = []string{}
 	f.KilledPods = []string{}
@@ -155,6 +159,9 @@ func (f *FakeRuntime) GetPods(all bool) ([]*Pod, error) {
 	defer f.Unlock()
 
 	f.CalledFunctions = append(f.CalledFunctions, "GetPods")
+	if all {
+		return f.AllPodList, f.Err
+	}
 	return f.PodList, f.Err
 }
 
@@ -221,6 +228,24 @@ func (f *FakeRuntime) GetPodStatus(*api.Pod) (*api.PodStatus, error) {
 	defer f.Unlock()
 
 	f.CalledFunctions = append(f.CalledFunctions, "GetPodStatus")
+	status := f.PodStatus
+	return &status, f.Err
+}
+
+func (f *FakeRuntime) GetRawPodStatus(uid types.UID, name, namespace string) (*RawPodStatus, error) {
+	f.Lock()
+	defer f.Unlock()
+
+	f.CalledFunctions = append(f.CalledFunctions, "GetRawPodStatus")
+	status := f.RawPodStatus
+	return &status, f.Err
+}
+
+func (f *FakeRuntime) ConvertRawToPodStatus(_ *api.Pod, _ *RawPodStatus) (*api.PodStatus, error) {
+	f.Lock()
+	defer f.Unlock()
+
+	f.CalledFunctions = append(f.CalledFunctions, "ConvertRawToPodStatus")
 	status := f.PodStatus
 	return &status, f.Err
 }

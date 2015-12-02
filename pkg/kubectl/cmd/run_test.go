@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
 	"reflect"
 	"testing"
 
@@ -30,7 +31,7 @@ import (
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/client/unversioned/fake"
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
-	"k8s.io/kubernetes/pkg/util"
+	"k8s.io/kubernetes/pkg/util/intstr"
 )
 
 func TestGetRestartPolicy(t *testing.T) {
@@ -106,6 +107,68 @@ func TestGetEnv(t *testing.T) {
 	}
 }
 
+func TestRunArgsFollowDashRules(t *testing.T) {
+	_, _, rc := testData()
+
+	tests := []struct {
+		args          []string
+		argsLenAtDash int
+		expectError   bool
+		name          string
+	}{
+		{
+			args:          []string{},
+			argsLenAtDash: -1,
+			expectError:   true,
+			name:          "empty",
+		},
+		{
+			args:          []string{"foo"},
+			argsLenAtDash: -1,
+			expectError:   false,
+			name:          "no cmd",
+		},
+		{
+			args:          []string{"foo", "sleep"},
+			argsLenAtDash: -1,
+			expectError:   false,
+			name:          "cmd no dash",
+		},
+		{
+			args:          []string{"foo", "sleep"},
+			argsLenAtDash: 1,
+			expectError:   false,
+			name:          "cmd has dash",
+		},
+		{
+			args:          []string{"foo", "sleep"},
+			argsLenAtDash: 0,
+			expectError:   true,
+			name:          "no name",
+		},
+	}
+	for _, test := range tests {
+		f, tf, codec := NewAPIFactory()
+		tf.Client = &fake.RESTClient{
+			Codec: codec,
+			Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 201, Body: objBody(codec, &rc.Items[0])}, nil
+			}),
+		}
+		tf.Namespace = "test"
+		tf.ClientConfig = &client.Config{}
+		cmd := NewCmdRun(f, os.Stdin, os.Stdout, os.Stderr)
+		cmd.Flags().Set("image", "nginx")
+		err := Run(f, os.Stdin, os.Stdout, os.Stderr, cmd, test.args, test.argsLenAtDash)
+		if test.expectError && err == nil {
+			t.Errorf("unexpected non-error (%s)", test.name)
+		}
+		if !test.expectError && err != nil {
+			t.Errorf("unexpected error: %v (%s)", err, test.name)
+		}
+	}
+}
+
 func TestGenerateService(t *testing.T) {
 
 	tests := []struct {
@@ -136,7 +199,7 @@ func TestGenerateService(t *testing.T) {
 						{
 							Port:       80,
 							Protocol:   "TCP",
-							TargetPort: util.NewIntOrStringFromInt(80),
+							TargetPort: intstr.FromInt(80),
 						},
 					},
 					Selector: map[string]string{
@@ -168,7 +231,7 @@ func TestGenerateService(t *testing.T) {
 						{
 							Port:       80,
 							Protocol:   "TCP",
-							TargetPort: util.NewIntOrStringFromInt(80),
+							TargetPort: intstr.FromInt(80),
 						},
 					},
 					Selector: map[string]string{
@@ -200,10 +263,10 @@ func TestGenerateService(t *testing.T) {
 	for _, test := range tests {
 		sawPOST := false
 		f, tf, codec := NewAPIFactory()
-		tf.ClientConfig = &client.Config{Version: testapi.Default.Version()}
+		tf.ClientConfig = &client.Config{GroupVersion: testapi.Default.GroupVersion()}
 		tf.Client = &fake.RESTClient{
 			Codec: codec,
-			Client: fake.HTTPClientFunc(func(req *http.Request) (*http.Response, error) {
+			Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 				switch p, m := req.URL.Path, req.Method; {
 				case test.expectPOST && m == "POST" && p == "/namespaces/namespace/services":
 					sawPOST = true
@@ -235,6 +298,7 @@ func TestGenerateService(t *testing.T) {
 		}
 		cmd := &cobra.Command{}
 		cmd.Flags().String("output", "", "")
+		cmd.Flags().Bool(cmdutil.ApplyAnnotationsFlag, false, "")
 		addRunFlags(cmd)
 
 		if !test.expectPOST {

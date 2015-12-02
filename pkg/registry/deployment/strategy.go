@@ -26,7 +26,7 @@ import (
 	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/registry/generic"
 	"k8s.io/kubernetes/pkg/runtime"
-	errs "k8s.io/kubernetes/pkg/util/fielderrors"
+	utilvalidation "k8s.io/kubernetes/pkg/util/validation"
 )
 
 // deploymentStrategy implements behavior for Deployments.
@@ -51,9 +51,13 @@ func (deploymentStrategy) PrepareForCreate(obj runtime.Object) {
 }
 
 // Validate validates a new deployment.
-func (deploymentStrategy) Validate(ctx api.Context, obj runtime.Object) errs.ValidationErrorList {
+func (deploymentStrategy) Validate(ctx api.Context, obj runtime.Object) utilvalidation.ErrorList {
 	deployment := obj.(*extensions.Deployment)
 	return validation.ValidateDeployment(deployment)
+}
+
+// Canonicalize normalizes the object after validation.
+func (deploymentStrategy) Canonicalize(obj runtime.Object) {
 }
 
 // AllowCreateOnUpdate is false for deployments.
@@ -69,8 +73,8 @@ func (deploymentStrategy) PrepareForUpdate(obj, old runtime.Object) {
 }
 
 // ValidateUpdate is the default update validation for an end user.
-func (deploymentStrategy) ValidateUpdate(ctx api.Context, obj, old runtime.Object) errs.ValidationErrorList {
-	return validation.ValidateDeploymentUpdate(old.(*extensions.Deployment), obj.(*extensions.Deployment))
+func (deploymentStrategy) ValidateUpdate(ctx api.Context, obj, old runtime.Object) utilvalidation.ErrorList {
+	return validation.ValidateDeploymentUpdate(obj.(*extensions.Deployment), old.(*extensions.Deployment))
 }
 
 func (deploymentStrategy) AllowUnconditionalUpdate() bool {
@@ -91,8 +95,8 @@ func (deploymentStatusStrategy) PrepareForUpdate(obj, old runtime.Object) {
 }
 
 // ValidateUpdate is the default update validation for an end user updating status
-func (deploymentStatusStrategy) ValidateUpdate(ctx api.Context, obj, old runtime.Object) errs.ValidationErrorList {
-	return validation.ValidateDeploymentUpdate(old.(*extensions.Deployment), obj.(*extensions.Deployment))
+func (deploymentStatusStrategy) ValidateUpdate(ctx api.Context, obj, old runtime.Object) utilvalidation.ErrorList {
+	return validation.ValidateDeploymentUpdate(obj.(*extensions.Deployment), old.(*extensions.Deployment))
 }
 
 // DeploymentToSelectableFields returns a field set that represents the object.

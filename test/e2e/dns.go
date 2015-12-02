@@ -43,7 +43,7 @@ func createDNSPod(namespace, wheezyProbeCmd, jessieProbeCmd string) *api.Pod {
 	pod := &api.Pod{
 		TypeMeta: unversioned.TypeMeta{
 			Kind:       "Pod",
-			APIVersion: latest.GroupOrDie("").Version,
+			APIVersion: latest.GroupOrDie("").GroupVersion.Version,
 		},
 		ObjectMeta: api.ObjectMeta{
 			Name:      "dns-test-" + string(util.NewUUID()),
@@ -133,9 +133,9 @@ func assertFilesExist(fileNames []string, fileDir string, pod *api.Pod, client *
 		failed = []string{}
 		for _, fileName := range fileNames {
 			if _, err := client.Get().
-				Prefix("proxy").
-				Resource("pods").
 				Namespace(pod.Namespace).
+				Resource("pods").
+				SubResource("proxy").
 				Name(pod.Name).
 				Suffix(fileDir, fileName).
 				Do().Raw(); err != nil {
@@ -191,7 +191,7 @@ var _ = Describe("DNS", func() {
 
 		systemClient := f.Client.Pods(api.NamespaceSystem)
 		By("Waiting for DNS Service to be Running")
-		dnsPods, err := systemClient.List(dnsServiceLableSelector, fields.Everything())
+		dnsPods, err := systemClient.List(dnsServiceLableSelector, fields.Everything(), unversioned.ListOptions{})
 		if err != nil {
 			Failf("Failed to list all dns service pods")
 		}
@@ -229,7 +229,7 @@ var _ = Describe("DNS", func() {
 		systemClient := f.Client.Pods(api.NamespaceSystem)
 
 		By("Waiting for DNS Service to be Running")
-		dnsPods, err := systemClient.List(dnsServiceLableSelector, fields.Everything())
+		dnsPods, err := systemClient.List(dnsServiceLableSelector, fields.Everything(), unversioned.ListOptions{})
 		if err != nil {
 			Failf("Failed to list all dns service pods")
 		}

@@ -35,11 +35,11 @@ func NameSystems() namer.NameSystems {
 	return namer.NameSystems{
 		"public":  namer.NewPublicNamer(0),
 		"private": namer.NewPrivateNamer(0),
-		"raw":     namer.NewRawNamer(nil),
+		"raw":     namer.NewRawNamer("", nil),
 	}
 }
 
-// NameSystems returns the default name system for ordering the types to be
+// DefaultNameSystem returns the default name system for ordering the types to be
 // processed by the generators in this package.
 func DefaultNameSystem() string {
 	return "public"
@@ -90,8 +90,9 @@ func Packages(_ *generator.Context, arguments *args.GeneratorArgs) generator.Pac
 						// names?
 						OptionalName: c.Namers["private"].Name(t),
 					},
-					typeToMatch: t,
-					imports:     generator.NewImportTracker(),
+					outputPackage: arguments.OutputPackagePath,
+					typeToMatch:   t,
+					imports:       generator.NewImportTracker(),
 				})
 			}
 			return generators
@@ -121,8 +122,9 @@ func Packages(_ *generator.Context, arguments *args.GeneratorArgs) generator.Pac
 // genSet produces a file with a set for a single type.
 type genSet struct {
 	generator.DefaultGen
-	typeToMatch *types.Type
-	imports     *generator.ImportTracker
+	outputPackage string
+	typeToMatch   *types.Type
+	imports       *generator.ImportTracker
 }
 
 // Filter ignores all but one type because we're making a single file per type.
@@ -130,7 +132,7 @@ func (g *genSet) Filter(c *generator.Context, t *types.Type) bool { return t == 
 
 func (g *genSet) Namers(c *generator.Context) namer.NameSystems {
 	return namer.NameSystems{
-		"raw": namer.NewRawNamer(g.imports),
+		"raw": namer.NewRawNamer(g.outputPackage, g.imports),
 	}
 }
 

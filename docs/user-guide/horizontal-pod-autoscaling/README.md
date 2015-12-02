@@ -19,8 +19,8 @@ If you are using a released version of Kubernetes, you should
 refer to the docs that go with that version.
 
 <strong>
-The latest 1.0.x release of this document can be found
-[here](http://releases.k8s.io/release-1.0/docs/user-guide/horizontal-pod-autoscaling/README.md).
+The latest release of this document can be found
+[here](http://releases.k8s.io/release-1.1/docs/user-guide/horizontal-pod-autoscaling/README.md).
 
 Documentation for other releases can be found at
 [releases.k8s.io](http://releases.k8s.io).
@@ -42,6 +42,11 @@ In this document we explain how this feature works by walking you through an exa
 ## Prerequisites
 
 This example requires a running Kubernetes cluster and kubectl in the version at least 1.1.
+[Heapster](https://github.com/kubernetes/heapster) monitoring needs to be deployed in the cluster
+as horizontal pod autoscaler uses it to collect metrics
+(if you followed [getting started on GCE guide](../../../docs/getting-started-guides/gce.md),
+heapster monitoring will be turned-on by default).
+
 
 ## Step One: Run & expose php-apache server
 

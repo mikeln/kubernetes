@@ -23,6 +23,7 @@ import (
 
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/apis/extensions"
 	"k8s.io/kubernetes/pkg/client/record"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
@@ -60,7 +61,7 @@ func (d *DeploymentController) Run(syncPeriod time.Duration) {
 }
 
 func (d *DeploymentController) reconcileDeployments() []error {
-	list, err := d.expClient.Deployments(api.NamespaceAll).List(labels.Everything(), fields.Everything())
+	list, err := d.expClient.Deployments(api.NamespaceAll).List(labels.Everything(), fields.Everything(), unversioned.ListOptions{})
 	if err != nil {
 		return []error{fmt.Errorf("error listing deployments: %v", err)}
 	}
@@ -138,15 +139,14 @@ func (d *DeploymentController) getNewRC(deployment extensions.Deployment) (*api.
 	// new RC does not exist, create one.
 	namespace := deployment.ObjectMeta.Namespace
 	podTemplateSpecHash := deploymentutil.GetPodTemplateSpecHash(deployment.Spec.Template)
-	rcName := fmt.Sprintf("deploymentrc-%d", podTemplateSpecHash)
 	newRCTemplate := deploymentutil.GetNewRCTemplate(deployment)
 	// Add podTemplateHash label to selector.
 	newRCSelector := deploymentutil.CloneAndAddLabel(deployment.Spec.Selector, deployment.Spec.UniqueLabelKey, podTemplateSpecHash)
 
 	newRC := api.ReplicationController{
 		ObjectMeta: api.ObjectMeta{
-			Name:      rcName,
-			Namespace: namespace,
+			GenerateName: deployment.Name + "-",
+			Namespace:    namespace,
 		},
 		Spec: api.ReplicationControllerSpec{
 			Replicas: 0,
@@ -262,7 +262,7 @@ func (d *DeploymentController) scaleRCAndRecordEvent(rc *api.ReplicationControll
 	}
 	newRC, err := d.scaleRC(rc, newScale)
 	if err == nil {
-		d.eventRecorder.Eventf(&deployment, "ScalingRC", "Scaled %s rc %s to %d", scalingOperation, rc.Name, newScale)
+		d.eventRecorder.Eventf(&deployment, api.EventTypeNormal, "ScalingRC", "Scaled %s rc %s to %d", scalingOperation, rc.Name, newScale)
 	}
 	return newRC, err
 }

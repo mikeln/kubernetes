@@ -19,6 +19,7 @@ package e2e
 import (
 	"time"
 
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/fields"
 	"k8s.io/kubernetes/pkg/labels"
@@ -29,7 +30,7 @@ import (
 
 const datapointAmount = 5
 
-var systemContainers = []string{"/docker-daemon", "/kubelet", "/kube-proxy", "/system"}
+var systemContainers = []string{"/docker-daemon", "/kubelet", "/system"}
 
 //TODO tweak those values.
 var allowedUsage = resourceUsagePerContainer{
@@ -42,11 +43,6 @@ var allowedUsage = resourceUsagePerContainer{
 		CPUUsageInCores:         0.1,
 		MemoryUsageInBytes:      150000000,
 		MemoryWorkingSetInBytes: 150000000,
-	},
-	"/kube-proxy": &containerResourceUsage{
-		CPUUsageInCores:         0.025,
-		MemoryUsageInBytes:      100000000,
-		MemoryWorkingSetInBytes: 100000000,
 	},
 	"/system": &containerResourceUsage{
 		CPUUsageInCores:         0.03,
@@ -93,7 +89,7 @@ var _ = Describe("Resource usage of system containers", func() {
 
 	It("should not exceed expected amount.", func() {
 		By("Getting ResourceConsumption on all nodes")
-		nodeList, err := c.Nodes().List(labels.Everything(), fields.Everything())
+		nodeList, err := c.Nodes().List(labels.Everything(), fields.Everything(), unversioned.ListOptions{})
 		expectNoError(err)
 
 		resourceUsagePerNode := make(map[string][]resourceUsagePerContainer)

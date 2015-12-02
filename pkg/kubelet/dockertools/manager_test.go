@@ -43,6 +43,7 @@ import (
 	"k8s.io/kubernetes/pkg/types"
 	"k8s.io/kubernetes/pkg/util"
 	uexec "k8s.io/kubernetes/pkg/util/exec"
+	"k8s.io/kubernetes/pkg/util/intstr"
 	"k8s.io/kubernetes/pkg/util/sets"
 )
 
@@ -76,7 +77,7 @@ func (*fakeOptionGenerator) GenerateRunContainerOptions(pod *api.Pod, container 
 }
 
 func newTestDockerManagerWithHTTPClient(fakeHTTPClient *fakeHTTP) (*DockerManager, *FakeDockerClient) {
-	fakeDocker := &FakeDockerClient{VersionInfo: docker.Env{"Version=1.1.3", "ApiVersion=1.15"}, Errors: make(map[string]error), RemovedImages: sets.String{}}
+	fakeDocker := NewFakeDockerClient()
 	fakeRecorder := &record.FakeRecorder{}
 	containerRefManager := kubecontainer.NewRefManager()
 	networkPlugin, _ := network.InitNetworkPlugin([]network.NetworkPlugin{}, "", network.NewFakeHost(nil))
@@ -272,18 +273,18 @@ func verifyPods(a, b []*kubecontainer.Pod) bool {
 
 func TestGetPods(t *testing.T) {
 	manager, fakeDocker := newTestDockerManager()
-	dockerContainers := []docker.APIContainers{
+	dockerContainers := []*docker.Container{
 		{
-			ID:    "1111",
-			Names: []string{"/k8s_foo_qux_new_1234_42"},
+			ID:   "1111",
+			Name: "/k8s_foo_qux_new_1234_42",
 		},
 		{
-			ID:    "2222",
-			Names: []string{"/k8s_bar_qux_new_1234_42"},
+			ID:   "2222",
+			Name: "/k8s_bar_qux_new_1234_42",
 		},
 		{
-			ID:    "3333",
-			Names: []string{"/k8s_bar_jlk_wen_5678_42"},
+			ID:   "3333",
+			Name: "/k8s_bar_jlk_wen_5678_42",
 		},
 	}
 
@@ -291,7 +292,10 @@ func TestGetPods(t *testing.T) {
 	// because the conversion is tested separately in convert_test.go
 	containers := make([]*kubecontainer.Container, len(dockerContainers))
 	for i := range containers {
-		c, err := toRuntimeContainer(&dockerContainers[i])
+		c, err := toRuntimeContainer(&docker.APIContainers{
+			ID:    dockerContainers[i].ID,
+			Names: []string{dockerContainers[i].Name},
+		})
 		if err != nil {
 			t.Fatalf("unexpected error %v", err)
 		}
@@ -313,7 +317,7 @@ func TestGetPods(t *testing.T) {
 		},
 	}
 
-	fakeDocker.ContainerList = dockerContainers
+	fakeDocker.SetFakeRunningContainers(dockerContainers)
 	actual, err := manager.GetPods(false)
 	if err != nil {
 		t.Fatalf("unexpected error %v", err)
@@ -389,21 +393,22 @@ func TestKillContainerInPod(t *testing.T) {
 		},
 		Spec: api.PodSpec{Containers: []api.Container{{Name: "foo"}, {Name: "bar"}}},
 	}
-	containers := []docker.APIContainers{
+	containers := []*docker.Container{
 		{
-			ID:    "1111",
-			Names: []string{"/k8s_foo_qux_new_1234_42"},
+			ID:   "1111",
+			Name: "/k8s_foo_qux_new_1234_42",
 		},
 		{
-			ID:    "2222",
-			Names: []string{"/k8s_bar_qux_new_1234_42"},
+			ID:   "2222",
+			Name: "/k8s_bar_qux_new_1234_42",
 		},
 	}
-	containerToKill := &containers[0]
-	containerToSpare := &containers[1]
-	fakeDocker.ContainerList = containers
+	containerToKill := containers[0]
+	containerToSpare := containers[1]
 
-	if err := manager.KillContainerInPod(kubecontainer.ContainerID{}, &pod.Spec.Containers[0], pod); err != nil {
+	fakeDocker.SetFakeRunningContainers(containers)
+
+	if err := manager.KillContainerInPod(kubecontainer.ContainerID{}, &pod.Spec.Containers[0], pod, "test kill container in pod."); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 	// Assert the container has been stopped.
@@ -447,28 +452,26 @@ func TestKillContainerInPodWithPreStop(t *testing.T) {
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
-	containers := []docker.APIContainers{
+	containers := []*docker.Container{
 		{
-			ID:    "1111",
-			Names: []string{"/k8s_foo_qux_new_1234_42"},
-		},
-		{
-			ID:    "2222",
-			Names: []string{"/k8s_bar_qux_new_1234_42"},
-		},
-	}
-	containerToKill := &containers[0]
-	fakeDocker.ContainerList = containers
-	fakeDocker.Container = &docker.Container{
-		Config: &docker.Config{
-			Labels: map[string]string{
-				kubernetesPodLabel:       string(podString),
-				kubernetesContainerLabel: "foo",
+			ID:   "1111",
+			Name: "/k8s_foo_qux_new_1234_42",
+			Config: &docker.Config{
+				Labels: map[string]string{
+					kubernetesPodLabel:       string(podString),
+					kubernetesContainerLabel: "foo",
+				},
 			},
 		},
+		{
+			ID:   "2222",
+			Name: "/k8s_bar_qux_new_1234_42",
+		},
 	}
+	containerToKill := containers[0]
+	fakeDocker.SetFakeRunningContainers(containers)
 
-	if err := manager.KillContainerInPod(kubecontainer.ContainerID{}, &pod.Spec.Containers[0], pod); err != nil {
+	if err := manager.KillContainerInPod(kubecontainer.ContainerID{}, &pod.Spec.Containers[0], pod, "test kill container with preStop."); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 	// Assert the container has been stopped.
@@ -492,20 +495,20 @@ func TestKillContainerInPodWithError(t *testing.T) {
 		},
 		Spec: api.PodSpec{Containers: []api.Container{{Name: "foo"}, {Name: "bar"}}},
 	}
-	containers := []docker.APIContainers{
+	containers := []*docker.Container{
 		{
-			ID:    "1111",
-			Names: []string{"/k8s_foo_qux_new_1234_42"},
+			ID:   "1111",
+			Name: "/k8s_foo_qux_new_1234_42",
 		},
 		{
-			ID:    "2222",
-			Names: []string{"/k8s_bar_qux_new_1234_42"},
+			ID:   "2222",
+			Name: "/k8s_bar_qux_new_1234_42",
 		},
 	}
-	fakeDocker.ContainerList = containers
+	fakeDocker.SetFakeRunningContainers(containers)
 	fakeDocker.Errors["stop"] = fmt.Errorf("sample error")
 
-	if err := manager.KillContainerInPod(kubecontainer.ContainerID{}, &pod.Spec.Containers[0], pod); err == nil {
+	if err := manager.KillContainerInPod(kubecontainer.ContainerID{}, &pod.Spec.Containers[0], pod, "test kill container with error."); err == nil {
 		t.Errorf("expected error, found nil")
 	}
 }
@@ -564,7 +567,7 @@ func runSyncPod(t *testing.T, dm *DockerManager, fakeDocker *FakeDockerClient, p
 func TestSyncPodCreateNetAndContainer(t *testing.T) {
 	dm, fakeDocker := newTestDockerManager()
 	dm.podInfraContainerImage = "pod_infra_image"
-	fakeDocker.ContainerList = []docker.APIContainers{}
+
 	pod := &api.Pod{
 		ObjectMeta: api.ObjectMeta{
 			UID:       "12345678",
@@ -598,8 +601,8 @@ func TestSyncPodCreateNetAndContainer(t *testing.T) {
 	}
 
 	if len(fakeDocker.Created) != 2 ||
-		!matchString(t, "k8s_POD\\.[a-f0-9]+_foo_new_", fakeDocker.Created[0]) ||
-		!matchString(t, "k8s_bar\\.[a-f0-9]+_foo_new_", fakeDocker.Created[1]) {
+		!matchString(t, "/k8s_POD\\.[a-f0-9]+_foo_new_", fakeDocker.Created[0]) ||
+		!matchString(t, "/k8s_bar\\.[a-f0-9]+_foo_new_", fakeDocker.Created[1]) {
 		t.Errorf("Unexpected containers created %v", fakeDocker.Created)
 	}
 	fakeDocker.Unlock()
@@ -611,7 +614,6 @@ func TestSyncPodCreatesNetAndContainerPullsImage(t *testing.T) {
 	puller := dm.dockerPuller.(*FakeDockerPuller)
 	puller.HasImages = []string{}
 	dm.podInfraContainerImage = "pod_infra_image"
-	fakeDocker.ContainerList = []docker.APIContainers{}
 	pod := &api.Pod{
 		ObjectMeta: api.ObjectMeta{
 			UID:       "12345678",
@@ -641,8 +643,8 @@ func TestSyncPodCreatesNetAndContainerPullsImage(t *testing.T) {
 	}
 
 	if len(fakeDocker.Created) != 2 ||
-		!matchString(t, "k8s_POD\\.[a-f0-9]+_foo_new_", fakeDocker.Created[0]) ||
-		!matchString(t, "k8s_bar\\.[a-f0-9]+_foo_new_", fakeDocker.Created[1]) {
+		!matchString(t, "/k8s_POD\\.[a-f0-9]+_foo_new_", fakeDocker.Created[0]) ||
+		!matchString(t, "/k8s_bar\\.[a-f0-9]+_foo_new_", fakeDocker.Created[1]) {
 		t.Errorf("Unexpected containers created %v", fakeDocker.Created)
 	}
 	fakeDocker.Unlock()
@@ -662,21 +664,12 @@ func TestSyncPodWithPodInfraCreatesContainer(t *testing.T) {
 			},
 		},
 	}
-	fakeDocker.ContainerList = []docker.APIContainers{
-		{
-			// pod infra container
-			Names: []string{"/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_0"},
-			ID:    "9876",
-		},
-	}
-	fakeDocker.ContainerMap = map[string]*docker.Container{
-		"9876": {
-			ID:         "9876",
-			Config:     &docker.Config{},
-			HostConfig: &docker.HostConfig{},
-		},
-	}
 
+	fakeDocker.SetFakeRunningContainers([]*docker.Container{{
+		ID: "9876",
+		// Pod infra container.
+		Name: "/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_0",
+	}})
 	runSyncPod(t, dm, fakeDocker, pod, nil, false)
 
 	verifyCalls(t, fakeDocker, []string{
@@ -688,7 +681,7 @@ func TestSyncPodWithPodInfraCreatesContainer(t *testing.T) {
 
 	fakeDocker.Lock()
 	if len(fakeDocker.Created) != 1 ||
-		!matchString(t, "k8s_bar\\.[a-f0-9]+_foo_new_", fakeDocker.Created[0]) {
+		!matchString(t, "/k8s_bar\\.[a-f0-9]+_foo_new_", fakeDocker.Created[0]) {
 		t.Errorf("Unexpected containers created %v", fakeDocker.Created)
 	}
 	fakeDocker.Unlock()
@@ -708,21 +701,10 @@ func TestSyncPodDeletesWithNoPodInfraContainer(t *testing.T) {
 			},
 		},
 	}
-	fakeDocker.ContainerList = []docker.APIContainers{
-		{
-			// format is // k8s_<container-id>_<pod-fullname>_<pod-uid>
-			Names: []string{"/k8s_bar1_foo1_new_12345678_0"},
-			ID:    "1234",
-		},
-	}
-
-	fakeDocker.ContainerMap = map[string]*docker.Container{
-		"1234": {
-			ID:         "1234",
-			Config:     &docker.Config{},
-			HostConfig: &docker.HostConfig{},
-		},
-	}
+	fakeDocker.SetFakeRunningContainers([]*docker.Container{{
+		ID:   "1234",
+		Name: "/k8s_bar1_foo1_new_12345678_0",
+	}})
 
 	runSyncPod(t, dm, fakeDocker, pod, nil, false)
 
@@ -762,40 +744,19 @@ func TestSyncPodDeletesDuplicate(t *testing.T) {
 		},
 	}
 
-	fakeDocker.ContainerList = []docker.APIContainers{
+	fakeDocker.SetFakeRunningContainers([]*docker.Container{
 		{
-			// the k8s prefix is required for the kubelet to manage the container
-			Names: []string{"/k8s_foo_bar_new_12345678_1111"},
-			ID:    "1234",
-		},
-		{
-			// pod infra container
-			Names: []string{"/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_bar_new_12345678_2222"},
-			ID:    "9876",
+			ID:   "1234",
+			Name: "/k8s_foo_bar_new_12345678_1111",
 		},
 		{
-			// Duplicate for the same container.
-			Names: []string{"/k8s_foo_bar_new_12345678_3333"},
-			ID:    "4567",
+			ID:   "9876",
+			Name: "/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_bar_new_12345678_2222",
 		},
-	}
-	fakeDocker.ContainerMap = map[string]*docker.Container{
-		"1234": {
-			ID:         "1234",
-			Config:     &docker.Config{},
-			HostConfig: &docker.HostConfig{},
-		},
-		"9876": {
-			ID:         "9876",
-			Config:     &docker.Config{},
-			HostConfig: &docker.HostConfig{},
-		},
-		"4567": {
-			ID:         "4567",
-			Config:     &docker.Config{},
-			HostConfig: &docker.HostConfig{},
-		},
-	}
+		{
+			ID:   "4567",
+			Name: "/k8s_foo_bar_new_12345678_3333",
+		}})
 
 	runSyncPod(t, dm, fakeDocker, pod, nil, false)
 
@@ -826,31 +787,15 @@ func TestSyncPodBadHash(t *testing.T) {
 		},
 	}
 
-	fakeDocker.ContainerList = []docker.APIContainers{
+	fakeDocker.SetFakeRunningContainers([]*docker.Container{
 		{
-			// the k8s prefix is required for the kubelet to manage the container
-			Names: []string{"/k8s_bar.1234_foo_new_12345678_42"},
-			ID:    "1234",
+			ID:   "1234",
+			Name: "/k8s_bar.1234_foo_new_12345678_42",
 		},
 		{
-			// pod infra container
-			Names: []string{"/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_42"},
-			ID:    "9876",
-		},
-	}
-	fakeDocker.ContainerMap = map[string]*docker.Container{
-		"1234": {
-			ID:         "1234",
-			Config:     &docker.Config{},
-			HostConfig: &docker.HostConfig{},
-		},
-		"9876": {
-			ID:         "9876",
-			Config:     &docker.Config{},
-			HostConfig: &docker.HostConfig{},
-		},
-	}
-
+			ID:   "9876",
+			Name: "/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_42",
+		}})
 	runSyncPod(t, dm, fakeDocker, pod, nil, false)
 
 	verifyCalls(t, fakeDocker, []string{
@@ -882,30 +827,15 @@ func TestSyncPodsUnhealthy(t *testing.T) {
 		},
 	}
 
-	fakeDocker.ContainerList = []docker.APIContainers{
+	fakeDocker.SetFakeRunningContainers([]*docker.Container{
 		{
-			// the k8s prefix is required for the kubelet to manage the container
-			Names: []string{"/k8s_unhealthy_foo_new_12345678_42"},
-			ID:    unhealthyContainerID,
+			ID:   unhealthyContainerID,
+			Name: "/k8s_unhealthy_foo_new_12345678_42",
 		},
 		{
-			// pod infra container
-			Names: []string{"/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_42"},
-			ID:    infraContainerID,
-		},
-	}
-	fakeDocker.ContainerMap = map[string]*docker.Container{
-		unhealthyContainerID: {
-			ID:         unhealthyContainerID,
-			Config:     &docker.Config{},
-			HostConfig: &docker.HostConfig{},
-		},
-		infraContainerID: {
-			ID:         infraContainerID,
-			Config:     &docker.Config{},
-			HostConfig: &docker.HostConfig{},
-		},
-	}
+			ID:   infraContainerID,
+			Name: "/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_42",
+		}})
 	dm.livenessManager.Set(kubetypes.DockerID(unhealthyContainerID).ContainerID(), proberesults.Failure, nil)
 
 	runSyncPod(t, dm, fakeDocker, pod, nil, false)
@@ -939,31 +869,15 @@ func TestSyncPodsDoesNothing(t *testing.T) {
 			},
 		},
 	}
-
-	fakeDocker.ContainerList = []docker.APIContainers{
+	fakeDocker.SetFakeRunningContainers([]*docker.Container{
 		{
-			// format is // k8s_<container-id>_<pod-fullname>_<pod-uid>_<random>
-			Names: []string{"/k8s_bar." + strconv.FormatUint(kubecontainer.HashContainer(&container), 16) + "_foo_new_12345678_0"},
-			ID:    "1234",
+			ID:   "1234",
+			Name: "/k8s_bar." + strconv.FormatUint(kubecontainer.HashContainer(&container), 16) + "_foo_new_12345678_0",
 		},
 		{
-			// pod infra container
-			Names: []string{"/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_0"},
-			ID:    "9876",
-		},
-	}
-	fakeDocker.ContainerMap = map[string]*docker.Container{
-		"1234": {
-			ID:         "1234",
-			HostConfig: &docker.HostConfig{},
-			Config:     &docker.Config{},
-		},
-		"9876": {
-			ID:         "9876",
-			HostConfig: &docker.HostConfig{},
-			Config:     &docker.Config{},
-		},
-	}
+			ID:   "9876",
+			Name: "/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_0",
+		}})
 
 	runSyncPod(t, dm, fakeDocker, pod, nil, false)
 
@@ -978,7 +892,6 @@ func TestSyncPodWithPullPolicy(t *testing.T) {
 	puller := dm.dockerPuller.(*FakeDockerPuller)
 	puller.HasImages = []string{"existing_one", "want:latest"}
 	dm.podInfraContainerImage = "pod_infra_image"
-	fakeDocker.ContainerList = []docker.APIContainers{}
 
 	pod := &api.Pod{
 		ObjectMeta: api.ObjectMeta{
@@ -1049,40 +962,19 @@ func TestSyncPodWithRestartPolicy(t *testing.T) {
 			Containers: containers,
 		},
 	}
-
-	runningAPIContainers := []docker.APIContainers{
+	dockerContainers := []*docker.Container{
 		{
-			// pod infra container
-			Names: []string{"/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_0"},
-			ID:    "9876",
-		},
-	}
-	exitedAPIContainers := []docker.APIContainers{
-		{
-			// format is // k8s_<container-id>_<pod-fullname>_<pod-uid>
-			Names: []string{"/k8s_succeeded." + strconv.FormatUint(kubecontainer.HashContainer(&containers[0]), 16) + "_foo_new_12345678_0"},
-			ID:    "1234",
-		},
-		{
-			// format is // k8s_<container-id>_<pod-fullname>_<pod-uid>
-			Names: []string{"/k8s_failed." + strconv.FormatUint(kubecontainer.HashContainer(&containers[1]), 16) + "_foo_new_12345678_0"},
-			ID:    "5678",
-		},
-	}
-
-	containerMap := map[string]*docker.Container{
-		"9876": {
 			ID:     "9876",
-			Name:   "POD",
+			Name:   "/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_0",
 			Config: &docker.Config{},
 			State: docker.State{
 				StartedAt: time.Now(),
 				Running:   true,
 			},
 		},
-		"1234": {
+		{
 			ID:     "1234",
-			Name:   "succeeded",
+			Name:   "/k8s_succeeded." + strconv.FormatUint(kubecontainer.HashContainer(&containers[0]), 16) + "_foo_new_12345678_0",
 			Config: &docker.Config{},
 			State: docker.State{
 				ExitCode:   0,
@@ -1090,17 +982,16 @@ func TestSyncPodWithRestartPolicy(t *testing.T) {
 				FinishedAt: time.Now(),
 			},
 		},
-		"5678": {
+		{
 			ID:     "5678",
-			Name:   "failed",
+			Name:   "/k8s_failed." + strconv.FormatUint(kubecontainer.HashContainer(&containers[1]), 16) + "_foo_new_12345678_0",
 			Config: &docker.Config{},
 			State: docker.State{
 				ExitCode:   42,
 				StartedAt:  time.Now(),
 				FinishedAt: time.Now(),
 			},
-		},
-	}
+		}}
 
 	tests := []struct {
 		policy  api.RestartPolicy
@@ -1144,13 +1035,9 @@ func TestSyncPodWithRestartPolicy(t *testing.T) {
 	}
 
 	for i, tt := range tests {
-		fakeDocker.ContainerList = runningAPIContainers
-		fakeDocker.ExitedContainerList = exitedAPIContainers
-		fakeDocker.ContainerMap = containerMap
+		fakeDocker.SetFakeContainers(dockerContainers)
 		pod.Spec.RestartPolicy = tt.policy
-
 		runSyncPod(t, dm, fakeDocker, pod, nil, false)
-
 		// 'stop' is because the pod infra container is killed when no container is running.
 		verifyCalls(t, fakeDocker, tt.calls)
 
@@ -1181,47 +1068,28 @@ func TestGetPodStatusWithLastTermination(t *testing.T) {
 		},
 	}
 
-	exitedAPIContainers := []docker.APIContainers{
+	dockerContainers := []*docker.Container{
 		{
-			// format is // k8s_<container-id>_<pod-fullname>_<pod-uid>
-			Names: []string{"/k8s_succeeded." + strconv.FormatUint(kubecontainer.HashContainer(&containers[0]), 16) + "_foo_new_12345678_0"},
-			ID:    "1234",
-		},
-		{
-			// format is // k8s_<container-id>_<pod-fullname>_<pod-uid>
-			Names: []string{"/k8s_failed." + strconv.FormatUint(kubecontainer.HashContainer(&containers[1]), 16) + "_foo_new_12345678_0"},
-			ID:    "5678",
-		},
-	}
-
-	containerMap := map[string]*docker.Container{
-		"9876": {
-			ID:         "9876",
-			Name:       "POD",
-			Config:     &docker.Config{},
-			HostConfig: &docker.HostConfig{},
+			ID:   "9876",
+			Name: "/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_0",
 			State: docker.State{
 				StartedAt:  time.Now(),
 				FinishedAt: time.Now(),
 				Running:    true,
 			},
 		},
-		"1234": {
-			ID:         "1234",
-			Name:       "succeeded",
-			Config:     &docker.Config{},
-			HostConfig: &docker.HostConfig{},
+		{
+			ID:   "1234",
+			Name: "/k8s_succeeded." + strconv.FormatUint(kubecontainer.HashContainer(&containers[0]), 16) + "_foo_new_12345678_0",
 			State: docker.State{
 				ExitCode:   0,
 				StartedAt:  time.Now(),
 				FinishedAt: time.Now(),
 			},
 		},
-		"5678": {
-			ID:         "5678",
-			Name:       "failed",
-			Config:     &docker.Config{},
-			HostConfig: &docker.HostConfig{},
+		{
+			ID:   "5678",
+			Name: "/k8s_failed." + strconv.FormatUint(kubecontainer.HashContainer(&containers[1]), 16) + "_foo_new_12345678_0",
 			State: docker.State{
 				ExitCode:   42,
 				StartedAt:  time.Now(),
@@ -1257,18 +1125,9 @@ func TestGetPodStatusWithLastTermination(t *testing.T) {
 	}
 
 	for i, tt := range tests {
-		fakeDocker.ExitedContainerList = exitedAPIContainers
-		fakeDocker.ContainerMap = containerMap
+		fakeDocker.SetFakeContainers(dockerContainers)
 		fakeDocker.ClearCalls()
 		pod.Spec.RestartPolicy = tt.policy
-		fakeDocker.ContainerList = []docker.APIContainers{
-			{
-				// pod infra container
-				Names: []string{"/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_0"},
-				ID:    "9876",
-			},
-		}
-
 		runSyncPod(t, dm, fakeDocker, pod, nil, false)
 
 		// Check if we can retrieve the pod status.
@@ -1317,53 +1176,27 @@ func TestSyncPodBackoff(t *testing.T) {
 		},
 	}
 
-	containerList := []docker.APIContainers{
-		// format is // k8s_<container-id>_<pod-fullname>_<pod-uid>_<random>
-		{
-			// pod infra container
-			Names: []string{"/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_podfoo_nsnew_12345678_0"},
-			ID:    "9876",
-		},
-		{
-			Names: []string{"/k8s_good." + strconv.FormatUint(kubecontainer.HashContainer(&containers[0]), 16) + "_podfoo_nsnew_12345678_0"},
-			ID:    "1234",
-		},
-	}
-
-	exitedAPIContainers := []docker.APIContainers{
-		{
-			// format is // k8s_<container-id>_<pod-fullname>_<pod-uid>
-			Names: []string{"/k8s_bad." + strconv.FormatUint(kubecontainer.HashContainer(&containers[1]), 16) + "_podfoo_nsnew_12345678_0"},
-			ID:    "5678",
-		},
-	}
 	stableId := "k8s_bad." + strconv.FormatUint(kubecontainer.HashContainer(&containers[1]), 16) + "_podfoo_nsnew_12345678"
-	containerMap := map[string]*docker.Container{
-		"9876": {
-			ID:         "9876",
-			Name:       "POD",
-			Config:     &docker.Config{},
-			HostConfig: &docker.HostConfig{},
+	dockerContainers := []*docker.Container{
+		{
+			ID:   "9876",
+			Name: "/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_podfoo_nsnew_12345678_0",
 			State: docker.State{
 				StartedAt: startTime,
 				Running:   true,
 			},
 		},
-		"1234": {
-			ID:         "1234",
-			Name:       "good",
-			Config:     &docker.Config{},
-			HostConfig: &docker.HostConfig{},
+		{
+			ID:   "1234",
+			Name: "/k8s_good." + strconv.FormatUint(kubecontainer.HashContainer(&containers[0]), 16) + "_podfoo_nsnew_12345678_0",
 			State: docker.State{
 				StartedAt: startTime,
 				Running:   true,
 			},
 		},
-		"5678": {
-			ID:         "5678",
-			Name:       "bad",
-			Config:     &docker.Config{},
-			HostConfig: &docker.HostConfig{},
+		{
+			ID:   "5678",
+			Name: "/k8s_bad." + strconv.FormatUint(kubecontainer.HashContainer(&containers[1]), 16) + "_podfoo_nsnew_12345678_0",
 			State: docker.State{
 				ExitCode:   42,
 				StartedAt:  startTime,
@@ -1395,9 +1228,7 @@ func TestSyncPodBackoff(t *testing.T) {
 	backOff := util.NewBackOff(time.Second, time.Minute)
 	backOff.Clock = fakeClock
 	for _, c := range tests {
-		fakeDocker.ContainerMap = containerMap
-		fakeDocker.ExitedContainerList = exitedAPIContainers
-		fakeDocker.ContainerList = containerList
+		fakeDocker.SetFakeContainers(dockerContainers)
 		fakeClock.Time = startTime.Add(time.Duration(c.tick) * time.Second)
 
 		runSyncPod(t, dm, fakeDocker, pod, backOff, c.expectErr)
@@ -1410,7 +1241,7 @@ func TestSyncPodBackoff(t *testing.T) {
 		if len(fakeDocker.Created) > 0 {
 			// pretend kill the container
 			fakeDocker.Created = nil
-			containerMap["5678"].State.FinishedAt = startTime.Add(time.Duration(c.killDelay) * time.Second)
+			dockerContainers[2].State.FinishedAt = startTime.Add(time.Duration(c.killDelay) * time.Second)
 		}
 	}
 }
@@ -1437,19 +1268,10 @@ func TestGetPodCreationFailureReason(t *testing.T) {
 
 	// Pretend that the pod infra container has already been created, so that
 	// we can run the user containers.
-	fakeDocker.ContainerList = []docker.APIContainers{
-		{
-			Names: []string{"/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_0"},
-			ID:    "9876",
-		},
-	}
-	fakeDocker.ContainerMap = map[string]*docker.Container{
-		"9876": {
-			ID:         "9876",
-			HostConfig: &docker.HostConfig{},
-			Config:     &docker.Config{},
-		},
-	}
+	fakeDocker.SetFakeRunningContainers([]*docker.Container{{
+		ID:   "9876",
+		Name: "/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_0",
+	}})
 
 	runSyncPod(t, dm, fakeDocker, pod, nil, true)
 	// Check if we can retrieve the pod status.
@@ -1490,23 +1312,12 @@ func TestGetPodPullImageFailureReason(t *testing.T) {
 			Containers: []api.Container{{Name: "bar", Image: "realImage", ImagePullPolicy: api.PullAlways}},
 		},
 	}
-
 	// Pretend that the pod infra container has already been created, so that
 	// we can run the user containers.
-	fakeDocker.ContainerList = []docker.APIContainers{
-		{
-			Names: []string{"/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_0"},
-			ID:    "9876",
-		},
-	}
-	fakeDocker.ContainerMap = map[string]*docker.Container{
-		"9876": {
-			ID:         "9876",
-			HostConfig: &docker.HostConfig{},
-			Config:     &docker.Config{},
-		},
-	}
-
+	fakeDocker.SetFakeRunningContainers([]*docker.Container{{
+		ID:   "9876",
+		Name: "/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_0",
+	}})
 	runSyncPod(t, dm, fakeDocker, pod, nil, true)
 	// Check if we can retrieve the pod status.
 	status, err := dm.GetPodStatus(pod)
@@ -1543,14 +1354,12 @@ func TestGetRestartCount(t *testing.T) {
 		},
 	}
 
-	fakeDocker.ContainerMap = map[string]*docker.Container{}
-
 	// Helper function for verifying the restart count.
 	verifyRestartCount := func(pod *api.Pod, expectedCount int) api.PodStatus {
 		runSyncPod(t, dm, fakeDocker, pod, nil, false)
 		status, err := dm.GetPodStatus(pod)
 		if err != nil {
-			t.Fatalf("unexpected error %v", err)
+			t.Fatalf("Unexpected error %v", err)
 		}
 		restartCount := status.ContainerStatuses[0].RestartCount
 		if restartCount != expectedCount {
@@ -1562,10 +1371,10 @@ func TestGetRestartCount(t *testing.T) {
 	killOneContainer := func(pod *api.Pod) {
 		status, err := dm.GetPodStatus(pod)
 		if err != nil {
-			t.Fatalf("unexpected error %v", err)
+			t.Fatalf("Unexpected error %v", err)
 		}
 		containerID := kubecontainer.ParseContainerID(status.ContainerStatuses[0].ContainerID)
-		dm.KillContainerInPod(containerID, &pod.Spec.Containers[0], pod)
+		dm.KillContainerInPod(containerID, &pod.Spec.Containers[0], pod, "test container restart count.")
 	}
 	// Container "bar" starts the first time.
 	// TODO: container lists are expected to be sorted reversely by time.
@@ -1622,20 +1431,23 @@ func TestGetTerminationMessagePath(t *testing.T) {
 		},
 	}
 
-	fakeDocker.ContainerMap = map[string]*docker.Container{}
-
 	runSyncPod(t, dm, fakeDocker, pod, nil, false)
 
 	containerList := fakeDocker.ContainerList
 	if len(containerList) != 2 {
 		// One for infra container, one for container "bar"
-		t.Fatalf("unexpected container list length %d", len(containerList))
+		t.Fatalf("Unexpected container list length %d", len(containerList))
 	}
 	inspectResult, err := dm.client.InspectContainer(containerList[0].ID)
 	if err != nil {
-		t.Fatalf("unexpected inspect error %v", err)
+		t.Fatalf("Unexpected inspect error: %v", err)
 	}
-	terminationMessagePath := getTerminationMessagePathFromLabel(inspectResult.Config.Labels)
+	var containerInfo *labelledContainerInfo
+	containerInfo, err = getContainerInfoFromLabel(inspectResult.Config.Labels)
+	if err != nil {
+		t.Fatalf("Unexpected error when getContainerInfoFromLabel: %v", err)
+	}
+	terminationMessagePath := containerInfo.TerminationMessagePath
 	if terminationMessagePath != containers[0].TerminationMessagePath {
 		t.Errorf("expected termination message path %s, got %s", containers[0].TerminationMessagePath, terminationMessagePath)
 	}
@@ -1659,7 +1471,7 @@ func TestSyncPodWithPodInfraCreatesContainerCallsHandler(t *testing.T) {
 						PostStart: &api.Handler{
 							HTTPGet: &api.HTTPGetAction{
 								Host: "foo",
-								Port: util.IntOrString{IntVal: 8080, Kind: util.IntstrInt},
+								Port: intstr.FromInt(8080),
 								Path: "bar",
 							},
 						},
@@ -1668,21 +1480,10 @@ func TestSyncPodWithPodInfraCreatesContainerCallsHandler(t *testing.T) {
 			},
 		},
 	}
-	fakeDocker.ContainerList = []docker.APIContainers{
-		{
-			// pod infra container
-			Names: []string{"/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_0"},
-			ID:    "9876",
-		},
-	}
-	fakeDocker.ContainerMap = map[string]*docker.Container{
-		"9876": {
-			ID:         "9876",
-			Config:     &docker.Config{},
-			HostConfig: &docker.HostConfig{},
-		},
-	}
-
+	fakeDocker.SetFakeRunningContainers([]*docker.Container{{
+		ID:   "9876",
+		Name: "/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_0",
+	}})
 	runSyncPod(t, dm, fakeDocker, pod, nil, false)
 
 	verifyCalls(t, fakeDocker, []string{
@@ -1694,7 +1495,7 @@ func TestSyncPodWithPodInfraCreatesContainerCallsHandler(t *testing.T) {
 
 	fakeDocker.Lock()
 	if len(fakeDocker.Created) != 1 ||
-		!matchString(t, "k8s_bar\\.[a-f0-9]+_foo_new_", fakeDocker.Created[0]) {
+		!matchString(t, "/k8s_bar\\.[a-f0-9]+_foo_new_", fakeDocker.Created[0]) {
 		t.Errorf("Unexpected containers created %v", fakeDocker.Created)
 	}
 	fakeDocker.Unlock()
@@ -1721,7 +1522,7 @@ func TestSyncPodEventHandlerFails(t *testing.T) {
 						PostStart: &api.Handler{
 							HTTPGet: &api.HTTPGetAction{
 								Host: "does.no.exist",
-								Port: util.IntOrString{IntVal: 8080, Kind: util.IntstrInt},
+								Port: intstr.FromInt(8080),
 								Path: "bar",
 							},
 						},
@@ -1731,21 +1532,10 @@ func TestSyncPodEventHandlerFails(t *testing.T) {
 		},
 	}
 
-	fakeDocker.ContainerList = []docker.APIContainers{
-		{
-			// pod infra container
-			Names: []string{"/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_42"},
-			ID:    "9876",
-		},
-	}
-	fakeDocker.ContainerMap = map[string]*docker.Container{
-		"9876": {
-			ID:         "9876",
-			Config:     &docker.Config{},
-			HostConfig: &docker.HostConfig{},
-		},
-	}
-
+	fakeDocker.SetFakeRunningContainers([]*docker.Container{{
+		ID:   "9876",
+		Name: "/k8s_POD." + strconv.FormatUint(generatePodInfraContainerHash(pod), 16) + "_foo_new_12345678_0",
+	}})
 	runSyncPod(t, dm, fakeDocker, pod, nil, true)
 
 	verifyCalls(t, fakeDocker, []string{
@@ -1806,7 +1596,6 @@ func TestSyncPodWithTerminationLog(t *testing.T) {
 		Name: "bar",
 		TerminationMessagePath: "/dev/somepath",
 	}
-	fakeDocker.ContainerList = []docker.APIContainers{}
 	pod := &api.Pod{
 		ObjectMeta: api.ObjectMeta{
 			UID:       "12345678",
@@ -1831,9 +1620,17 @@ func TestSyncPodWithTerminationLog(t *testing.T) {
 	defer os.Remove(testPodContainerDir)
 
 	fakeDocker.Lock()
-	defer fakeDocker.Unlock()
-
-	parts := strings.Split(fakeDocker.Container.HostConfig.Binds[0], ":")
+	if len(fakeDocker.Created) != 2 ||
+		!matchString(t, "/k8s_POD\\.[a-f0-9]+_foo_new_", fakeDocker.Created[0]) ||
+		!matchString(t, "/k8s_bar\\.[a-f0-9]+_foo_new_", fakeDocker.Created[1]) {
+		t.Errorf("Unexpected containers created %v", fakeDocker.Created)
+	}
+	fakeDocker.Unlock()
+	newContainer, err := fakeDocker.InspectContainer(fakeDocker.Created[1])
+	if err != nil {
+		t.Fatalf("unexpected error %v", err)
+	}
+	parts := strings.Split(newContainer.HostConfig.Binds[0], ":")
 	if !matchString(t, testPodContainerDir+"/k8s_bar\\.[a-f0-9]", parts[0]) {
 		t.Errorf("Unexpected host path: %s", parts[0])
 	}
@@ -1871,23 +1668,24 @@ func TestSyncPodWithHostNetwork(t *testing.T) {
 
 	fakeDocker.Lock()
 	if len(fakeDocker.Created) != 2 ||
-		!matchString(t, "k8s_POD\\.[a-f0-9]+_foo_new_", fakeDocker.Created[0]) ||
-		!matchString(t, "k8s_bar\\.[a-f0-9]+_foo_new_", fakeDocker.Created[1]) {
+		!matchString(t, "/k8s_POD\\.[a-f0-9]+_foo_new_", fakeDocker.Created[0]) ||
+		!matchString(t, "/k8s_bar\\.[a-f0-9]+_foo_new_", fakeDocker.Created[1]) {
 		t.Errorf("Unexpected containers created %v", fakeDocker.Created)
 	}
+	fakeDocker.Unlock()
 
-	utsMode := fakeDocker.Container.HostConfig.UTSMode
+	newContainer, err := fakeDocker.InspectContainer(fakeDocker.Created[1])
+	if err != nil {
+		t.Fatalf("unexpected error %v", err)
+	}
+	utsMode := newContainer.HostConfig.UTSMode
 	if utsMode != "host" {
 		t.Errorf("Pod with host network must have \"host\" utsMode, actual: \"%v\"", utsMode)
 	}
-
-	fakeDocker.Unlock()
 }
 
 func TestGetPodStatusSortedContainers(t *testing.T) {
 	dm, fakeDocker := newTestDockerManager()
-	dockerInspect := map[string]*docker.Container{}
-	dockerList := []docker.APIContainers{}
 	specContainerList := []api.Container{}
 	expectedOrder := []string{}
 
@@ -1899,25 +1697,20 @@ func TestGetPodStatusSortedContainers(t *testing.T) {
 		Image: "some:latest",
 	}
 
+	dockerContainers := []*docker.Container{}
 	for i := 0; i < numContainers; i++ {
 		id := fmt.Sprintf("%v", i)
 		containerName := fmt.Sprintf("%vcontainer", id)
 		expectedOrder = append(expectedOrder, containerName)
-		dockerInspect[id] = &docker.Container{
+		dockerContainers = append(dockerContainers, &docker.Container{
 			ID:     id,
-			Name:   containerName,
+			Name:   fmt.Sprintf("/k8s_%v_%v_%v_%v_42", containerName, podName, podNs, podUID),
 			Config: fakeConfig,
 			Image:  fmt.Sprintf("%vimageid", id),
-		}
-		dockerList = append(dockerList, docker.APIContainers{
-			ID:    id,
-			Names: []string{fmt.Sprintf("/k8s_%v_%v_%v_%v_42", containerName, podName, podNs, podUID)},
 		})
 		specContainerList = append(specContainerList, api.Container{Name: containerName})
 	}
-
-	fakeDocker.ContainerMap = dockerInspect
-	fakeDocker.ContainerList = dockerList
+	fakeDocker.SetFakeRunningContainers(dockerContainers)
 	fakeDocker.ClearCalls()
 	pod := &api.Pod{
 		ObjectMeta: api.ObjectMeta{

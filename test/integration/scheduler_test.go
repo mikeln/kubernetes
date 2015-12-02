@@ -22,6 +22,7 @@ package integration
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -37,6 +38,7 @@ import (
 	"k8s.io/kubernetes/pkg/client/cache"
 	"k8s.io/kubernetes/pkg/client/record"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
+	kubeletclient "k8s.io/kubernetes/pkg/kubelet/client"
 	"k8s.io/kubernetes/pkg/master"
 	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/pkg/util/wait"
@@ -82,7 +84,7 @@ func TestUnschedulableNodes(t *testing.T) {
 
 	m = master.New(&master.Config{
 		StorageDestinations:   storageDestinations,
-		KubeletClient:         client.FakeKubeletClient{},
+		KubeletClient:         kubeletclient.FakeKubeletClient{},
 		EnableCoreControllers: true,
 		EnableLogsSupport:     false,
 		EnableUISupport:       false,
@@ -91,9 +93,10 @@ func TestUnschedulableNodes(t *testing.T) {
 		Authorizer:            apiserver.NewAlwaysAllowAuthorizer(),
 		AdmissionControl:      admit.NewAlwaysAdmit(),
 		StorageVersions:       storageVersions,
+		PublicAddress:         net.ParseIP("192.168.10.4"),
 	})
 
-	restClient := client.NewOrDie(&client.Config{Host: s.URL, Version: testapi.Default.Version()})
+	restClient := client.NewOrDie(&client.Config{Host: s.URL, GroupVersion: testapi.Default.GroupVersion()})
 
 	schedulerConfigFactory := factory.NewConfigFactory(restClient, nil)
 	schedulerConfig, err := schedulerConfigFactory.Create()
@@ -332,7 +335,7 @@ func BenchmarkScheduling(b *testing.B) {
 
 	m = master.New(&master.Config{
 		StorageDestinations:   storageDestinations,
-		KubeletClient:         client.FakeKubeletClient{},
+		KubeletClient:         kubeletclient.FakeKubeletClient{},
 		EnableCoreControllers: true,
 		EnableLogsSupport:     false,
 		EnableUISupport:       false,
@@ -341,13 +344,14 @@ func BenchmarkScheduling(b *testing.B) {
 		Authorizer:            apiserver.NewAlwaysAllowAuthorizer(),
 		AdmissionControl:      admit.NewAlwaysAdmit(),
 		StorageVersions:       storageVersions,
+		PublicAddress:         net.ParseIP("192.168.10.4"),
 	})
 
 	c := client.NewOrDie(&client.Config{
-		Host:    s.URL,
-		Version: testapi.Default.Version(),
-		QPS:     5000.0,
-		Burst:   5000,
+		Host:         s.URL,
+		GroupVersion: testapi.Default.GroupVersion(),
+		QPS:          5000.0,
+		Burst:        5000,
 	})
 
 	schedulerConfigFactory := factory.NewConfigFactory(c, nil)

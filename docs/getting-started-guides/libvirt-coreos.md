@@ -19,8 +19,8 @@ If you are using a released version of Kubernetes, you should
 refer to the docs that go with that version.
 
 <strong>
-The latest 1.0.x release of this document can be found
-[here](http://releases.k8s.io/release-1.0/docs/getting-started-guides/libvirt-coreos.md).
+The latest release of this document can be found
+[here](http://releases.k8s.io/release-1.1/docs/getting-started-guides/libvirt-coreos.md).
 
 Documentation for other releases can be found at
 [releases.k8s.io](http://releases.k8s.io).
@@ -144,6 +144,7 @@ In order to fix that issue, you have several possibilities:
   * writable by your user;
   * accessible by the qemu user.
 * Grant the qemu user access to the storage pool.
+* Edit `/etc/libvirt/qemu.conf` to run under that user, that have access to the storage pool (not recommended for production usage).
 
 On Arch:
 
@@ -166,7 +167,7 @@ cluster/kube-up.sh
 
 The `KUBERNETES_PROVIDER` environment variable tells all of the various cluster management scripts which variant to use.  If you forget to set this, the assumption is you are running on Google Compute Engine.
 
-The `NUM_MINIONS` environment variable may be set to specify the number of nodes to start. If it is not set, the number of nodes defaults to 3.
+The `NUM_NODES` environment variable may be set to specify the number of nodes to start. If it is not set, the number of nodes defaults to 3.
 
 The `KUBE_PUSH` environment variable may be set to specify which Kubernetes binaries must be deployed on the cluster. Its possible values are:
 
@@ -224,7 +225,7 @@ export KUBERNETES_PROVIDER=libvirt-coreos
 Bring up a libvirt-CoreOS cluster of 5 nodes
 
 ```sh
-NUM_MINIONS=5 cluster/kube-up.sh
+NUM_NODES=5 cluster/kube-up.sh
 ```
 
 Destroy the libvirt-CoreOS cluster

@@ -19,8 +19,8 @@ If you are using a released version of Kubernetes, you should
 refer to the docs that go with that version.
 
 <strong>
-The latest 1.0.x release of this document can be found
-[here](http://releases.k8s.io/release-1.0/docs/proposals/compute-resource-metrics-api.md).
+The latest release of this document can be found
+[here](http://releases.k8s.io/release-1.1/docs/proposals/compute-resource-metrics-api.md).
 
 Documentation for other releases can be found at
 [releases.k8s.io](http://releases.k8s.io).
@@ -96,7 +96,7 @@ only be available through the kubelet. The types of metrics are detailed
   - `/rawNodes/localhost` - The only node provided is `localhost`; type
     metrics.Node
 - `/derivedNodes` - host metrics; type `[]metrics.DerivedNode`
-  - `/nodes/{node}` - derived metrics for a specific node
+  - `/derivedNodes/{node}` - derived metrics for a specific node
 - `/rawPods` - All raw pod metrics across all namespaces; type
   `[]metrics.RawPod`
 - `/derivedPods` - All derived pod metrics across all namespaces; type

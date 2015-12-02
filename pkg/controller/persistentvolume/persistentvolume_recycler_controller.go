@@ -22,6 +22,7 @@ import (
 
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/client/cache"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/cloudprovider"
@@ -64,10 +65,10 @@ func NewPersistentVolumeRecycler(kubeClient client.Interface, syncPeriod time.Du
 	_, volumeController := framework.NewInformer(
 		&cache.ListWatch{
 			ListFunc: func() (runtime.Object, error) {
-				return kubeClient.PersistentVolumes().List(labels.Everything(), fields.Everything())
+				return kubeClient.PersistentVolumes().List(labels.Everything(), fields.Everything(), unversioned.ListOptions{})
 			},
-			WatchFunc: func(options api.ListOptions) (watch.Interface, error) {
-				return kubeClient.PersistentVolumes().Watch(labels.Everything(), fields.Everything(), options)
+			WatchFunc: func(options unversioned.ListOptions) (watch.Interface, error) {
+				return kubeClient.PersistentVolumes().Watch(options)
 			},
 		},
 		&api.PersistentVolume{},
@@ -293,4 +294,8 @@ func (f *PersistentVolumeRecycler) GetMounter() mount.Interface {
 
 func (f *PersistentVolumeRecycler) GetWriter() ioutil.Writer {
 	return nil
+}
+
+func (f *PersistentVolumeRecycler) GetHostName() string {
+	return ""
 }

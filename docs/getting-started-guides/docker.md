@@ -19,8 +19,8 @@ If you are using a released version of Kubernetes, you should
 refer to the docs that go with that version.
 
 <strong>
-The latest 1.0.x release of this document can be found
-[here](http://releases.k8s.io/release-1.0/docs/getting-started-guides/docker.md).
+The latest release of this document can be found
+[here](http://releases.k8s.io/release-1.1/docs/getting-started-guides/docker.md).
 
 Documentation for other releases can be found at
 [releases.k8s.io](http://releases.k8s.io).
@@ -35,7 +35,7 @@ Running Kubernetes locally via Docker
 
 **Table of Contents**
 
-- [Overview](#setting-up-a-cluster)
+- [Overview](#overview)
 - [Prerequisites](#prerequisites)
 - [Step One: Run etcd](#step-one-run-etcd)
 - [Step Two: Run the master](#step-two-run-the-master)
@@ -83,10 +83,13 @@ parameters as follows:
     swapaccount=1
     ```
 
+4. Decide what Kubernetes version to use.  Set the `${K8S_VERSION}` variable to
+   a value such as "1.1.1".
+
 ### Step One: Run etcd
 
 ```sh
-docker run --net=host -d gcr.io/google_containers/etcd:2.0.12 /usr/local/bin/etcd --addr=127.0.0.1:4001 --bind-addr=0.0.0.0:4001 --data-dir=/var/etcd/data
+docker run --net=host -d gcr.io/google_containers/etcd:2.2.1 /usr/local/bin/etcd --listen-client-urls=http://127.0.0.1:4001 --advertise-client-urls=http://127.0.0.1:4001 --data-dir=/var/etcd/data
 ```
 
 ### Step Two: Run the master
@@ -103,7 +106,7 @@ docker run \
     --pid=host \
     --privileged=true \
     -d \
-    gcr.io/google_containers/hyperkube:v1.0.6 \
+    gcr.io/google_containers/hyperkube:v${K8S_VERSION} \
     /hyperkube kubelet --containerized --hostname-override="127.0.0.1" --address="0.0.0.0" --api-servers=http://localhost:8080 --config=/etc/kubernetes/manifests
 ```
 
@@ -112,15 +115,33 @@ This actually runs the kubelet, which in turn runs a [pod](../user-guide/pods.md
 ### Step Three: Run the service proxy
 
 ```sh
-docker run -d --net=host --privileged gcr.io/google_containers/hyperkube:v1.0.6 /hyperkube proxy --master=http://127.0.0.1:8080 --v=2
+docker run -d --net=host --privileged gcr.io/google_containers/hyperkube:v${K8S_VERSION} /hyperkube proxy --master=http://127.0.0.1:8080 --v=2
 ```
 
 ### Test it out
 
-At this point you should have a running Kubernetes cluster.  You can test this by downloading the kubectl
-binary
-([OS X](https://storage.googleapis.com/kubernetes-release/release/v1.0.1/bin/darwin/amd64/kubectl))
-([linux](https://storage.googleapis.com/kubernetes-release/release/v1.0.1/bin/linux/amd64/kubectl))
+At this point you should have a running Kubernetes cluster.  You can test this
+by downloading the kubectl binary for `${K8S_VERSION}` (look at the URL in the
+following links) and make it available by editing your PATH environment
+variable.
+([OS X](http://storage.googleapis.com/kubernetes-release/release/v1.1.1/bin/darwin/amd64/kubectl))
+([linux](http://storage.googleapis.com/kubernetes-release/release/v1.1.1/bin/linux/amd64/kubectl))
+
+For example, OS X:
+
+```console
+$ wget http://storage.googleapis.com/kubernetes-release/release/v${K8S_VERSION}/bin/darwin/amd64/kubectl
+$ chmod 755 kubectl
+$ PATH=$PATH:`pwd`
+```
+
+Linux:
+
+```console
+$ wget http://storage.googleapis.com/kubernetes-release/release/v${K8S_VERSION}/bin/linux/amd64/kubectl
+$ chmod 755 kubectl
+$ PATH=$PATH:`pwd`
+```
 
 <hr>
 

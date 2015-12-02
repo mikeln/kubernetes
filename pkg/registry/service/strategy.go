@@ -25,7 +25,7 @@ import (
 	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/registry/generic"
 	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/util/fielderrors"
+	utilvalidation "k8s.io/kubernetes/pkg/util/validation"
 )
 
 // svcStrategy implements behavior for Services
@@ -58,17 +58,21 @@ func (svcStrategy) PrepareForUpdate(obj, old runtime.Object) {
 }
 
 // Validate validates a new service.
-func (svcStrategy) Validate(ctx api.Context, obj runtime.Object) fielderrors.ValidationErrorList {
+func (svcStrategy) Validate(ctx api.Context, obj runtime.Object) utilvalidation.ErrorList {
 	service := obj.(*api.Service)
 	return validation.ValidateService(service)
+}
+
+// Canonicalize normalizes the object after validation.
+func (svcStrategy) Canonicalize(obj runtime.Object) {
 }
 
 func (svcStrategy) AllowCreateOnUpdate() bool {
 	return true
 }
 
-func (svcStrategy) ValidateUpdate(ctx api.Context, obj, old runtime.Object) fielderrors.ValidationErrorList {
-	return validation.ValidateServiceUpdate(old.(*api.Service), obj.(*api.Service))
+func (svcStrategy) ValidateUpdate(ctx api.Context, obj, old runtime.Object) utilvalidation.ErrorList {
+	return validation.ValidateServiceUpdate(obj.(*api.Service), old.(*api.Service))
 }
 
 func (svcStrategy) AllowUnconditionalUpdate() bool {

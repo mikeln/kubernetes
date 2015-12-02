@@ -132,27 +132,10 @@ func (s storeToNodeConditionLister) List() (nodes api.NodeList, err error) {
 		if s.predicate(node) {
 			nodes.Items = append(nodes.Items, node)
 		} else {
-			glog.V(2).Infof("Node %s matches none of the conditions", node.Name)
+			glog.V(5).Infof("Node %s matches none of the conditions", node.Name)
 		}
 	}
 	return
-}
-
-// TODO Move this back to scheduler as a helper function that takes a Store,
-// rather than a method of StoreToNodeLister.
-// GetNodeInfo returns cached data for the node 'id'.
-func (s *StoreToNodeLister) GetNodeInfo(id string) (*api.Node, error) {
-	node, exists, err := s.Get(&api.Node{ObjectMeta: api.ObjectMeta{Name: id}})
-
-	if err != nil {
-		return nil, fmt.Errorf("error retrieving node '%v' from cache: %v", id, err)
-	}
-
-	if !exists {
-		return nil, fmt.Errorf("node '%v' is not in cache", id)
-	}
-
-	return node.(*api.Node), nil
 }
 
 // StoreToReplicationControllerLister gives a store List and Exists methods. The store must contain only ReplicationControllers.
@@ -203,7 +186,7 @@ func (s *StoreToReplicationControllerLister) GetPodControllers(pod *api.Pod) (co
 		controllers = append(controllers, rc)
 	}
 	if len(controllers) == 0 {
-		err = fmt.Errorf("Could not find daemon set for pod %s in namespace %s with labels: %v", pod.Name, pod.Namespace, pod.Labels)
+		err = fmt.Errorf("Could not find controller for pod %s in namespace %s with labels: %v", pod.Name, pod.Namespace, pod.Labels)
 	}
 	return
 }
@@ -247,7 +230,11 @@ func (s *StoreToDaemonSetLister) GetPodDaemonSets(pod *api.Pod) (daemonSets []ex
 		if daemonSet.Namespace != pod.Namespace {
 			continue
 		}
-		selector = labels.Set(daemonSet.Spec.Selector).AsSelector()
+		selector, err = extensions.PodSelectorAsSelector(daemonSet.Spec.Selector)
+		if err != nil {
+			// this should not happen if the DaemonSet passed validation
+			return nil, err
+		}
 
 		// If a daemonSet with a nil or empty selector creeps in, it should match nothing, not everything.
 		if selector.Empty() || !selector.Matches(labels.Set(pod.Labels)) {

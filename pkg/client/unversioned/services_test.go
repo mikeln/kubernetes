@@ -55,7 +55,7 @@ func TestListServices(t *testing.T) {
 			},
 		},
 	}
-	receivedServiceList, err := c.Setup(t).Services(ns).List(labels.Everything(), fields.Everything())
+	receivedServiceList, err := c.Setup(t).Services(ns).List(labels.Everything(), fields.Everything(), unversioned.ListOptions{})
 	t.Logf("received services: %v %#v", err, receivedServiceList)
 	c.Validate(t, receivedServiceList, err)
 }
@@ -92,7 +92,7 @@ func TestListServicesLabels(t *testing.T) {
 	c.Setup(t)
 	c.QueryValidator[labelSelectorQueryParamName] = validateLabels
 	selector := labels.Set{"foo": "bar", "name": "baz"}.AsSelector()
-	receivedServiceList, err := c.Services(ns).List(selector, fields.Everything())
+	receivedServiceList, err := c.Services(ns).List(selector, fields.Everything(), unversioned.ListOptions{})
 	c.Validate(t, receivedServiceList, err)
 }
 
@@ -166,6 +166,18 @@ func TestServiceProxyGet(t *testing.T) {
 		},
 		Response: Response{StatusCode: 200, RawBody: &body},
 	}
-	response, err := c.Setup(t).Services(ns).ProxyGet("service-1", "foo", map[string]string{"param-name": "param-value"}).DoRaw()
+	response, err := c.Setup(t).Services(ns).ProxyGet("", "service-1", "", "foo", map[string]string{"param-name": "param-value"}).DoRaw()
+	c.ValidateRaw(t, response, err)
+
+	// With scheme and port specified
+	c = &testClient{
+		Request: testRequest{
+			Method: "GET",
+			Path:   testapi.Default.ResourcePathWithPrefix("proxy", "services", ns, "https:service-1:my-port") + "/foo",
+			Query:  buildQueryValues(url.Values{"param-name": []string{"param-value"}}),
+		},
+		Response: Response{StatusCode: 200, RawBody: &body},
+	}
+	response, err = c.Setup(t).Services(ns).ProxyGet("https", "service-1", "my-port", "foo", map[string]string{"param-name": "param-value"}).DoRaw()
 	c.ValidateRaw(t, response, err)
 }

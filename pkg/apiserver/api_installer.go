@@ -95,7 +95,7 @@ func (a *APIInstaller) NewWebService() *restful.WebService {
 	// TODO: change to restful.MIME_JSON when we set content type in client
 	ws.Consumes("*/*")
 	ws.Produces(restful.MIME_JSON)
-	ws.ApiVersion(a.group.Version)
+	ws.ApiVersion(a.group.GroupVersion.String())
 
 	return ws
 }
@@ -104,9 +104,9 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 	admit := a.group.Admit
 	context := a.group.Context
 
-	serverVersion := a.group.ServerVersion
-	if len(serverVersion) == 0 {
-		serverVersion = a.group.Version
+	serverGroupVersion := a.group.GroupVersion
+	if a.group.ServerGroupVersion != nil {
+		serverGroupVersion = *a.group.ServerGroupVersion
 	}
 
 	var resource, subresource string
@@ -126,13 +126,15 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 	if err != nil {
 		return nil, err
 	}
-	versionedPtr, err := a.group.Creater.New(a.group.Version, kind)
+	gvk := a.group.GroupVersion.WithKind(kind)
+
+	versionedPtr, err := a.group.Creater.New(a.group.GroupVersion.String(), kind)
 	if err != nil {
 		return nil, err
 	}
 	versionedObject := indirectArbitraryPointer(versionedPtr)
 
-	mapping, err := a.group.Mapper.RESTMapping(kind, a.group.Version)
+	mapping, err := a.group.Mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +150,9 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 		if err != nil {
 			return nil, err
 		}
-		parentMapping, err := a.group.Mapper.RESTMapping(parentKind, a.group.Version)
+		parentGVK := a.group.GroupVersion.WithKind(parentKind)
+
+		parentMapping, err := a.group.Mapper.RESTMapping(parentGVK.GroupKind(), parentGVK.Version)
 		if err != nil {
 			return nil, err
 		}
@@ -181,14 +185,14 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 	if isLister {
 		list := lister.NewList()
 		_, listKind, err := a.group.Typer.ObjectVersionAndKind(list)
-		versionedListPtr, err := a.group.Creater.New(a.group.Version, listKind)
+		versionedListPtr, err := a.group.Creater.New(a.group.GroupVersion.String(), listKind)
 		if err != nil {
 			return nil, err
 		}
 		versionedList = indirectArbitraryPointer(versionedListPtr)
 	}
 
-	versionedListOptions, err := a.group.Creater.New(serverVersion, "ListOptions")
+	versionedListOptions, err := a.group.Creater.New(serverGroupVersion.String(), "ListOptions")
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +200,7 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 	var versionedDeleterObject interface{}
 	switch {
 	case isGracefulDeleter:
-		objectPtr, err := a.group.Creater.New(serverVersion, "DeleteOptions")
+		objectPtr, err := a.group.Creater.New(serverGroupVersion.String(), "DeleteOptions")
 		if err != nil {
 			return nil, err
 		}
@@ -206,25 +210,34 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 		gracefulDeleter = rest.GracefulDeleteAdapter{Deleter: deleter}
 	}
 
-	versionedStatusPtr, err := a.group.Creater.New(serverVersion, "Status")
+	versionedStatusPtr, err := a.group.Creater.New(serverGroupVersion.String(), "Status")
 	if err != nil {
 		return nil, err
 	}
 	versionedStatus := indirectArbitraryPointer(versionedStatusPtr)
 	var (
-		getOptions          runtime.Object
-		versionedGetOptions runtime.Object
-		getOptionsKind      string
-		getSubpath          bool
-		getSubpathKey       string
+		getOptions             runtime.Object
+		versionedGetOptions    runtime.Object
+		getOptionsInternalKind unversioned.GroupVersionKind
+		getOptionsExternalKind unversioned.GroupVersionKind
+		getSubpath             bool
+		getSubpathKey          string
 	)
 	if isGetterWithOptions {
 		getOptions, getSubpath, getSubpathKey = getterWithOptions.NewGetOptions()
-		_, getOptionsKind, err = a.group.Typer.ObjectVersionAndKind(getOptions)
+		getOptionsGVString, getOptionsKind, err := a.group.Typer.ObjectVersionAndKind(getOptions)
 		if err != nil {
 			return nil, err
 		}
-		versionedGetOptions, err = a.group.Creater.New(serverVersion, getOptionsKind)
+		gv, err := unversioned.ParseGroupVersion(getOptionsGVString)
+		if err != nil {
+			return nil, err
+		}
+		getOptionsInternalKind = gv.WithKind(getOptionsKind)
+		// TODO this should be a list of all the different external versions we can coerce into the internalKind
+		getOptionsExternalKind = serverGroupVersion.WithKind(getOptionsKind)
+
+		versionedGetOptions, err = a.group.Creater.New(serverGroupVersion.String(), getOptionsKind)
 		if err != nil {
 			return nil, err
 		}
@@ -232,20 +245,29 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 	}
 
 	var (
-		connectOptions          runtime.Object
-		versionedConnectOptions runtime.Object
-		connectOptionsKind      string
-		connectSubpath          bool
-		connectSubpathKey       string
+		connectOptions             runtime.Object
+		versionedConnectOptions    runtime.Object
+		connectOptionsInternalKind unversioned.GroupVersionKind
+		connectOptionsExternalKind unversioned.GroupVersionKind
+		connectSubpath             bool
+		connectSubpathKey          string
 	)
 	if isConnecter {
 		connectOptions, connectSubpath, connectSubpathKey = connecter.NewConnectOptions()
 		if connectOptions != nil {
-			_, connectOptionsKind, err = a.group.Typer.ObjectVersionAndKind(connectOptions)
+			connectOptionsGVString, connectOptionsKind, err := a.group.Typer.ObjectVersionAndKind(connectOptions)
 			if err != nil {
 				return nil, err
 			}
-			versionedConnectOptions, err = a.group.Creater.New(serverVersion, connectOptionsKind)
+			gv, err := unversioned.ParseGroupVersion(connectOptionsGVString)
+			if err != nil {
+				return nil, err
+			}
+			connectOptionsInternalKind = gv.WithKind(connectOptionsKind)
+			// TODO this should be a list of all the different external versions we can coerce into the internalKind
+			connectOptionsExternalKind = serverGroupVersion.WithKind(connectOptionsKind)
+
+			versionedConnectOptions, err = a.group.Creater.New(serverGroupVersion.String(), connectOptionsKind)
 		}
 	}
 
@@ -375,15 +397,14 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 	// test/integration/auth_test.go is currently the most comprehensive status code test
 
 	reqScope := RequestScope{
-		ContextFunc:      ctxFn,
-		Creater:          a.group.Creater,
-		Convertor:        a.group.Convertor,
-		Codec:            mapping.Codec,
-		APIVersion:       a.group.Version,
-		ServerAPIVersion: serverVersion,
-		Resource:         resource,
-		Subresource:      subresource,
-		Kind:             kind,
+		ContextFunc: ctxFn,
+		Creater:     a.group.Creater,
+		Convertor:   a.group.Convertor,
+		Codec:       mapping.Codec,
+
+		Resource:    a.group.GroupVersion.WithResource(resource),
+		Subresource: subresource,
+		Kind:        a.group.GroupVersion.WithKind(kind),
 	}
 	for _, action := range actions {
 		reqScope.Namer = action.Namer
@@ -396,7 +417,7 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 		case "GET": // Get a resource.
 			var handler restful.RouteFunction
 			if isGetterWithOptions {
-				handler = GetResourceWithOptions(getterWithOptions, reqScope, getOptionsKind, getSubpath, getSubpathKey)
+				handler = GetResourceWithOptions(getterWithOptions, reqScope, getOptionsInternalKind, getOptionsExternalKind, getSubpath, getSubpathKey)
 			} else {
 				handler = GetResource(getter, reqScope)
 			}
@@ -577,7 +598,7 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 					doc = "connect " + method + " requests to " + subresource + " of " + kind
 				}
 				route := ws.Method(method).Path(action.Path).
-					To(ConnectResource(connecter, reqScope, admit, connectOptionsKind, path, connectSubpath, connectSubpathKey)).
+					To(ConnectResource(connecter, reqScope, admit, connectOptionsInternalKind, connectOptionsExternalKind, path, connectSubpath, connectSubpathKey)).
 					Filter(m).
 					Doc(doc).
 					Operation("connect" + strings.Title(strings.ToLower(method)) + namespaced + kind + strings.Title(subresource)).
@@ -828,17 +849,17 @@ func addObjectParams(ws *restful.WebService, route *restful.RouteBuilder, obj in
 // Convert the name of a golang type to the name of a JSON type
 func typeToJSON(typeName string) string {
 	switch typeName {
-	case "bool":
+	case "bool", "*bool":
 		return "boolean"
-	case "uint8", "int", "int32", "int64", "uint32", "uint64":
+	case "uint8", "*uint8", "int", "*int", "int32", "*int32", "int64", "*int64", "uint32", "*uint32", "uint64", "*uint64":
 		return "integer"
-	case "float64", "float32":
+	case "float64", "*float64", "float32", "*float32":
 		return "number"
-	case "unversioned.Time":
+	case "unversioned.Time", "*unversioned.Time":
 		return "string"
-	case "byte":
+	case "byte", "*byte":
 		return "string"
-	case "[]string":
+	case "[]string", "[]*string":
 		// TODO: Fix this when go-restful supports a way to specify an array query param:
 		// https://github.com/emicklei/go-restful/issues/225
 		return "string"

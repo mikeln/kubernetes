@@ -19,7 +19,6 @@ package main
 import (
 	"fmt"
 	"runtime"
-	"time"
 
 	docker "github.com/fsouza/go-dockerclient"
 
@@ -28,6 +27,7 @@ import (
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
 	"k8s.io/kubernetes/pkg/kubelet/cadvisor"
+	"k8s.io/kubernetes/pkg/kubelet/cm"
 	"k8s.io/kubernetes/pkg/kubelet/dockertools"
 	"k8s.io/kubernetes/pkg/kubemark"
 	proxyconfig "k8s.io/kubernetes/pkg/proxy/config"
@@ -72,9 +72,6 @@ func createClientFromFile(path string) (*client.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error while creating client: %v", err)
 	}
-	if client.Timeout == 0 {
-		client.Timeout = 30 * time.Second
-	}
 	return client, nil
 }
 
@@ -97,10 +94,10 @@ func main() {
 
 	if config.Morph == "kubelet" {
 		cadvisorInterface := new(cadvisor.Fake)
+		containerManager := cm.NewStubContainerManager()
 
-		fakeDockerClient := &dockertools.FakeDockerClient{}
+		fakeDockerClient := dockertools.NewFakeDockerClient()
 		fakeDockerClient.VersionInfo = docker.Env{"ApiVersion=1.18"}
-		fakeDockerClient.ContainerMap = make(map[string]*docker.Container)
 		fakeDockerClient.EnableSleep = true
 
 		hollowKubelet := kubemark.NewHollowKubelet(
@@ -110,6 +107,7 @@ func main() {
 			fakeDockerClient,
 			config.KubeletPort,
 			config.KubeletReadOnlyPort,
+			containerManager,
 		)
 		hollowKubelet.Run()
 	}

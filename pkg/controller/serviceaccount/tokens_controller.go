@@ -24,6 +24,7 @@ import (
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
 	apierrors "k8s.io/kubernetes/pkg/api/errors"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/client/cache"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/controller/framework"
@@ -63,10 +64,10 @@ func NewTokensController(cl client.Interface, options TokensControllerOptions) *
 	e.serviceAccounts, e.serviceAccountController = framework.NewIndexerInformer(
 		&cache.ListWatch{
 			ListFunc: func() (runtime.Object, error) {
-				return e.client.ServiceAccounts(api.NamespaceAll).List(labels.Everything(), fields.Everything())
+				return e.client.ServiceAccounts(api.NamespaceAll).List(labels.Everything(), fields.Everything(), unversioned.ListOptions{})
 			},
-			WatchFunc: func(options api.ListOptions) (watch.Interface, error) {
-				return e.client.ServiceAccounts(api.NamespaceAll).Watch(labels.Everything(), fields.Everything(), options)
+			WatchFunc: func(options unversioned.ListOptions) (watch.Interface, error) {
+				return e.client.ServiceAccounts(api.NamespaceAll).Watch(options)
 			},
 		},
 		&api.ServiceAccount{},
@@ -83,10 +84,11 @@ func NewTokensController(cl client.Interface, options TokensControllerOptions) *
 	e.secrets, e.secretController = framework.NewIndexerInformer(
 		&cache.ListWatch{
 			ListFunc: func() (runtime.Object, error) {
-				return e.client.Secrets(api.NamespaceAll).List(labels.Everything(), tokenSelector)
+				return e.client.Secrets(api.NamespaceAll).List(labels.Everything(), tokenSelector, unversioned.ListOptions{})
 			},
-			WatchFunc: func(options api.ListOptions) (watch.Interface, error) {
-				return e.client.Secrets(api.NamespaceAll).Watch(labels.Everything(), tokenSelector, options)
+			WatchFunc: func(options unversioned.ListOptions) (watch.Interface, error) {
+				options.FieldSelector.Selector = tokenSelector
+				return e.client.Secrets(api.NamespaceAll).Watch(options)
 			},
 		},
 		&api.Secret{},

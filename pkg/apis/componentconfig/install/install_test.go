@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"k8s.io/kubernetes/pkg/api/latest"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/apis/componentconfig"
 )
 
@@ -36,7 +37,7 @@ func TestCodec(t *testing.T) {
 	if err := json.Unmarshal(data, &other); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if other.APIVersion != latest.GroupOrDie("componentconfig").GroupVersion || other.Kind != "KubeProxyConfiguration" {
+	if other.APIVersion != latest.GroupOrDie("componentconfig").GroupVersion.String() || other.Kind != "KubeProxyConfiguration" {
 		t.Errorf("unexpected unmarshalled object %#v", other)
 	}
 }
@@ -45,36 +46,40 @@ func TestInterfacesFor(t *testing.T) {
 	if _, err := latest.GroupOrDie("componentconfig").InterfacesFor(""); err == nil {
 		t.Fatalf("unexpected non-error: %v", err)
 	}
-	for i, groupVersion := range append([]string{latest.GroupOrDie("componentconfig").GroupVersion}, latest.GroupOrDie("componentconfig").GroupVersions...) {
-		if vi, err := latest.GroupOrDie("componentconfig").InterfacesFor(groupVersion); err != nil || vi == nil {
+	for i, groupVersion := range append([]unversioned.GroupVersion{latest.GroupOrDie("componentconfig").GroupVersion}, latest.GroupOrDie("componentconfig").GroupVersions...) {
+		if vi, err := latest.GroupOrDie("componentconfig").InterfacesFor(groupVersion.String()); err != nil || vi == nil {
 			t.Fatalf("%d: unexpected result: %v", i, err)
 		}
 	}
 }
 
 func TestRESTMapper(t *testing.T) {
-	if v, k, err := latest.GroupOrDie("componentconfig").RESTMapper.VersionAndKindForResource("kubeproxyconfiguration"); err != nil || v != "componentconfig/v1alpha1" || k != "KubeProxyConfiguration" {
-		t.Errorf("unexpected version mapping: %s %s %v", v, k, err)
+	gv := unversioned.GroupVersion{Group: "componentconfig", Version: "v1alpha1"}
+	proxyGVK := gv.WithKind("KubeProxyConfiguration")
+
+	if gvk, err := latest.GroupOrDie("componentconfig").RESTMapper.KindFor("kubeproxyconfiguration"); err != nil || gvk != proxyGVK {
+		t.Errorf("unexpected version mapping: %v %v", gvk, err)
 	}
 
-	if m, err := latest.GroupOrDie("componentconfig").RESTMapper.RESTMapping("KubeProxyConfiguration", ""); err != nil || m.APIVersion != "componentconfig/v1alpha1" || m.Resource != "kubeproxyconfigurations" {
+	if m, err := latest.GroupOrDie("componentconfig").RESTMapper.RESTMapping(proxyGVK.GroupKind(), ""); err != nil || m.GroupVersionKind != proxyGVK || m.Resource != "kubeproxyconfigurations" {
 		t.Errorf("unexpected version mapping: %#v %v", m, err)
 	}
 
-	for _, groupVersion := range latest.GroupOrDie("componentconfig").GroupVersions {
-		mapping, err := latest.GroupOrDie("componentconfig").RESTMapper.RESTMapping("KubeProxyConfiguration", groupVersion)
+	for _, version := range latest.GroupOrDie("componentconfig").Versions {
+		mapping, err := latest.GroupOrDie("componentconfig").RESTMapper.RESTMapping(proxyGVK.GroupKind(), version)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
+			continue
 		}
 
 		if mapping.Resource != "kubeproxyconfigurations" {
 			t.Errorf("incorrect resource name: %#v", mapping)
 		}
-		if mapping.APIVersion != groupVersion {
+		if mapping.GroupVersionKind.GroupVersion() != gv {
 			t.Errorf("incorrect groupVersion: %v", mapping)
 		}
 
-		interfaces, _ := latest.GroupOrDie("componentconfig").InterfacesFor(groupVersion)
+		interfaces, _ := latest.GroupOrDie("componentconfig").InterfacesFor(gv.String())
 		if mapping.Codec != interfaces.Codec {
 			t.Errorf("unexpected codec: %#v, expected: %#v", mapping, interfaces)
 		}

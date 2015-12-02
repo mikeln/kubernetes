@@ -22,8 +22,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/meta"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/client/cache"
 	"k8s.io/kubernetes/pkg/conversion"
 	"k8s.io/kubernetes/pkg/runtime"
@@ -109,28 +112,6 @@ type Cacher struct {
 	//
 	// NOTE: DO NOT SET TO TRUE IN PRODUCTION CODE!
 	ListFromCache bool
-}
-
-// StorageFactory is a function signature for producing
-// a storage.Interface from given parameters.
-type StorageFactory func(
-	storage Interface,
-	capacity int,
-	versioner Versioner,
-	objectType runtime.Object,
-	resourcePrefix string,
-	namespaceScoped bool,
-	newListFunc func() runtime.Object) Interface
-
-func NoDecoration(
-	storage Interface,
-	capacity int,
-	versioner Versioner,
-	objectType runtime.Object,
-	resourcePrefix string,
-	namespaceScoped bool,
-	newListFunc func() runtime.Object) Interface {
-	return storage
 }
 
 // Create a new Cacher responsible from service WATCH and LIST requests from its
@@ -297,7 +278,7 @@ func (c *Cacher) List(ctx context.Context, key string, resourceVersion uint64, f
 	c.usable.RUnlock()
 
 	// List elements from cache, with at least 'resourceVersion'.
-	listPtr, err := runtime.GetItemsPtr(listObj)
+	listPtr, err := meta.GetItemsPtr(listObj)
 	if err != nil {
 		return err
 	}
@@ -352,10 +333,12 @@ func (c *Cacher) terminateAllWatchers() {
 	}
 }
 
-func forgetWatcher(c *Cacher, index int) func() {
-	return func() {
-		c.Lock()
-		defer c.Unlock()
+func forgetWatcher(c *Cacher, index int) func(bool) {
+	return func(lock bool) {
+		if lock {
+			c.Lock()
+			defer c.Unlock()
+		}
 		// It's possible that the watcher is already not in the map (e.g. in case of
 		// simulaneous Stop() and terminateAllWatchers(), but it doesn't break anything.
 		delete(c.watchers, index)
@@ -413,7 +396,7 @@ func (lw *cacherListerWatcher) List() (runtime.Object, error) {
 }
 
 // Implements cache.ListerWatcher interface.
-func (lw *cacherListerWatcher) Watch(options api.ListOptions) (watch.Interface, error) {
+func (lw *cacherListerWatcher) Watch(options unversioned.ListOptions) (watch.Interface, error) {
 	version, err := ParseWatchResourceVersion(options.ResourceVersion, lw.resourcePrefix)
 	if err != nil {
 		return nil, err
@@ -428,10 +411,10 @@ type cacheWatcher struct {
 	result  chan watch.Event
 	filter  FilterFunc
 	stopped bool
-	forget  func()
+	forget  func(bool)
 }
 
-func newCacheWatcher(initEvents []watchCacheEvent, filter FilterFunc, forget func()) *cacheWatcher {
+func newCacheWatcher(initEvents []watchCacheEvent, filter FilterFunc, forget func(bool)) *cacheWatcher {
 	watcher := &cacheWatcher{
 		input:   make(chan watchCacheEvent, 10),
 		result:  make(chan watch.Event, 10),
@@ -450,7 +433,7 @@ func (c *cacheWatcher) ResultChan() <-chan watch.Event {
 
 // Implements watch.Interface.
 func (c *cacheWatcher) Stop() {
-	c.forget()
+	c.forget(true)
 	c.stop()
 }
 
@@ -464,7 +447,15 @@ func (c *cacheWatcher) stop() {
 }
 
 func (c *cacheWatcher) add(event watchCacheEvent) {
-	c.input <- event
+	select {
+	case c.input <- event:
+	case <-time.After(5 * time.Second):
+		// This means that we couldn't send event to that watcher.
+		// Since we don't want to blockin on it infinitely,
+		// we simply terminate it.
+		c.forget(false)
+		c.stop()
+	}
 }
 
 func (c *cacheWatcher) sendWatchCacheEvent(event watchCacheEvent) {

@@ -29,11 +29,12 @@ import (
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/errors"
 	"k8s.io/kubernetes/pkg/api/meta"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/kubectl"
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 	"k8s.io/kubernetes/pkg/kubectl/resource"
-	"k8s.io/kubernetes/pkg/util"
+	"k8s.io/kubernetes/pkg/util/intstr"
 )
 
 // RollingUpdateOptions is the start of the data required to perform the operation.  As new fields are added, add them here instead of
@@ -58,8 +59,11 @@ $ cat frontend-v2.json | kubectl rolling-update frontend-v1 -f -
 # name of the replication controller.
 $ kubectl rolling-update frontend-v1 frontend-v2 --image=image:v2
 
-# Update the pods of frontend by just changing the image, and keeping the old name
+# Update the pods of frontend by just changing the image, and keeping the old name.
 $ kubectl rolling-update frontend --image=image:v2
+
+# Abort and reverse an existing rollout in progress (from frontend-v1 to frontend-v2).
+$ kubectl rolling-update frontend-v1 frontend-v2 --rollback
 `
 )
 
@@ -326,8 +330,8 @@ func RunRollingUpdate(f *cmdutil.Factory, out io.Writer, cmd *cobra.Command, arg
 		Interval:       interval,
 		Timeout:        timeout,
 		CleanupPolicy:  updateCleanupPolicy,
-		MaxUnavailable: util.NewIntOrStringFromInt(0),
-		MaxSurge:       util.NewIntOrStringFromInt(1),
+		MaxUnavailable: intstr.FromInt(0),
+		MaxSurge:       intstr.FromInt(1),
 	}
 	if rollback {
 		err = kubectl.AbortRollingUpdate(config)
@@ -379,8 +383,9 @@ func isReplicasDefaulted(info *resource.Info) bool {
 		// was unable to recover versioned info
 		return false
 	}
-	switch info.Mapping.APIVersion {
-	case "v1":
+
+	switch info.Mapping.GroupVersionKind.GroupVersion() {
+	case unversioned.GroupVersion{Version: "v1"}:
 		if rc, ok := info.VersionedObject.(*v1.ReplicationController); ok {
 			return rc.Spec.Replicas == nil
 		}

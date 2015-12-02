@@ -40,7 +40,7 @@ import (
 const (
 	PodInfraContainerName  = leaky.PodInfraContainerName
 	DockerPrefix           = "docker://"
-	PodInfraContainerImage = "beta.gcr.io/google_containers/pause:2.0"
+	PodInfraContainerImage = "gcr.io/google_containers/pause:2.0"
 	LogSuffix              = "log"
 )
 
@@ -159,6 +159,14 @@ func (p dockerPuller) Pull(image string, secrets []api.Secret) error {
 
 		err := p.client.PullImage(opts, docker.AuthConfiguration{})
 		if err == nil {
+			// Sometimes PullImage failed with no error returned.
+			exist, ierr := p.IsImagePresent(image)
+			if ierr != nil {
+				glog.Warningf("Failed to inspect image %s: %v", image, ierr)
+			}
+			if !exist {
+				return fmt.Errorf("image pull failed for unknown error")
+			}
 			return nil
 		}
 
@@ -189,7 +197,7 @@ func (p dockerPuller) Pull(image string, secrets []api.Secret) error {
 }
 
 func (p throttledDockerPuller) Pull(image string, secrets []api.Secret) error {
-	if p.limiter.CanAccept() {
+	if p.limiter.TryAccept() {
 		return p.puller.Pull(image, secrets)
 	}
 	return fmt.Errorf("pull QPS exceeded.")

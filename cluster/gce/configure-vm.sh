@@ -32,11 +32,11 @@ function ensure-basic-networking() {
     echo 'Waiting for functional DNS (trying to resolve metadata.google.internal)...'
     sleep 3
   done
-  until getent hosts $(hostname -f) &>/dev/null; do
+  until getent hosts $(hostname -f || echo _error_) &>/dev/null; do
     echo 'Waiting for functional DNS (trying to resolve my own FQDN)...'
     sleep 3
   done
-  until getent hosts $(hostname -i) &>/dev/null; do
+  until getent hosts $(hostname -i || echo _error_) &>/dev/null; do
     echo 'Waiting for functional DNS (trying to resolve my own IP)...'
     sleep 3
   done
@@ -285,7 +285,7 @@ opencontrail_public_subnet: '$(echo "$OPENCONTRAIL_PUBLIC_SUBNET")'
 enable_manifest_url: '$(echo "$ENABLE_MANIFEST_URL" | sed -e "s/'/''/g")'
 manifest_url: '$(echo "$MANIFEST_URL" | sed -e "s/'/''/g")'
 manifest_url_header: '$(echo "$MANIFEST_URL_HEADER" | sed -e "s/'/''/g")'
-num_nodes: $(echo "${NUM_MINIONS}")
+num_nodes: $(echo "${NUM_NODES}")
 e2e_storage_test_environment: '$(echo "$E2E_STORAGE_TEST_ENVIRONMENT" | sed -e "s/'/''/g")'
 EOF
 
@@ -320,11 +320,6 @@ EOF
 cluster_registry_disk_type: gce
 cluster_registry_disk_size: $(convert-bytes-gce-kube ${CLUSTER_REGISTRY_DISK_SIZE})
 cluster_registry_disk_name: ${CLUSTER_REGISTRY_DISK}
-EOF
-    fi
-    if [ -n "${ENABLE_EXPERIMENTAL_API:-}" ]; then
-      cat <<EOF >>/srv/salt-overlay/pillar/cluster-params.sls
-enable_experimental_api: '$(echo "$ENABLE_EXPERIMENTAL_API" | sed -e "s/'/''/g")'
 EOF
     fi
     if [ -n "${TERMINATED_POD_GC_THRESHOLD:-}" ]; then

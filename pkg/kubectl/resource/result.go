@@ -138,7 +138,7 @@ func (r *Result) Object() (runtime.Object, error) {
 			return objects[0], nil
 		}
 		// if the item is a list already, don't create another list
-		if runtime.IsListType(objects[0]) {
+		if meta.IsListType(objects[0]) {
 			return objects[0], nil
 		}
 	}
@@ -221,7 +221,7 @@ func AsVersionedObject(infos []*Info, forceList bool, version string) (runtime.O
 		object = objects[0]
 	} else {
 		object = &api.List{Items: objects}
-		converted, err := tryConvert(api.Scheme, object, version, latest.GroupOrDie("").Version)
+		converted, err := tryConvert(api.Scheme, object, version, latest.GroupOrDie("").GroupVersion.Version)
 		if err != nil {
 			return nil, err
 		}
@@ -254,7 +254,7 @@ func AsVersionedObjects(infos []*Info, version string) ([]runtime.Object, error)
 			}
 		}
 
-		converted, err := tryConvert(info.Mapping.ObjectConvertor, info.Object, version, info.Mapping.APIVersion)
+		converted, err := tryConvert(info.Mapping.ObjectConvertor, info.Object, version, info.Mapping.GroupVersionKind.GroupVersion().String())
 		if err != nil {
 			return nil, err
 		}

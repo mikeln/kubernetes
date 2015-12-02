@@ -33,12 +33,13 @@ import (
 	expvalidation "k8s.io/kubernetes/pkg/apis/extensions/validation"
 	"k8s.io/kubernetes/pkg/capabilities"
 	"k8s.io/kubernetes/pkg/runtime"
+	utilvalidation "k8s.io/kubernetes/pkg/util/validation"
 	"k8s.io/kubernetes/pkg/util/yaml"
 	schedulerapi "k8s.io/kubernetes/plugin/pkg/scheduler/api"
 	schedulerapilatest "k8s.io/kubernetes/plugin/pkg/scheduler/api/latest"
 )
 
-func validateObject(obj runtime.Object) (errors []error) {
+func validateObject(obj runtime.Object) (errors utilvalidation.ErrorList) {
 	switch t := obj.(type) {
 	case *api.ReplicationController:
 		if t.Namespace == "" {
@@ -122,7 +123,7 @@ func validateObject(obj runtime.Object) (errors []error) {
 		}
 		errors = expvalidation.ValidateDaemonSet(t)
 	default:
-		return []error{fmt.Errorf("no validation defined for %#v", obj)}
+		return utilvalidation.ErrorList{utilvalidation.NewInternalError("", fmt.Errorf("no validation defined for %#v", obj))}
 	}
 	return errors
 }
@@ -225,7 +226,6 @@ func TestExampleObjectSchemas(t *testing.T) {
 		"../docs/user-guide": {
 			"multi-pod":            nil,
 			"pod":                  &api.Pod{},
-			"replication":          &api.ReplicationController{},
 			"job":                  &extensions.Job{},
 			"ingress":              &extensions.Ingress{},
 			"nginx-deployment":     &extensions.Deployment{},
@@ -235,7 +235,8 @@ func TestExampleObjectSchemas(t *testing.T) {
 			"daemon": &extensions.DaemonSet{},
 		},
 		"../examples": {
-			"scheduler-policy-config": &schedulerapi.Policy{},
+			"scheduler-policy-config":               &schedulerapi.Policy{},
+			"scheduler-policy-config-with-extender": &schedulerapi.Policy{},
 		},
 		"../examples/rbd/secret": {
 			"ceph-secret": &api.Secret{},
@@ -356,11 +357,12 @@ func TestExampleObjectSchemas(t *testing.T) {
 			"secret":     &api.Secret{},
 		},
 		"../examples/spark": {
-			"spark-driver-controller": &api.ReplicationController{},
 			"spark-master-controller": &api.ReplicationController{},
 			"spark-master-service":    &api.Service{},
 			"spark-webui":             &api.Service{},
 			"spark-worker-controller": &api.ReplicationController{},
+			"zeppelin-controller":     &api.ReplicationController{},
+			"zeppelin-service":        &api.Service{},
 		},
 		"../examples/spark/spark-gluster": {
 			"spark-master-service":    &api.Service{},
@@ -408,7 +410,7 @@ func TestExampleObjectSchemas(t *testing.T) {
 				t.Logf("skipping : %s/%s\n", path, name)
 				return
 			}
-			if name == "scheduler-policy-config" {
+			if strings.Contains(name, "scheduler-policy-config") {
 				if err := schedulerapilatest.Codec.DecodeInto(data, expectedType); err != nil {
 					t.Errorf("%s did not decode correctly: %v\n%s", path, err, string(data))
 					return
@@ -464,7 +466,6 @@ func TestReadme(t *testing.T) {
 		{"../README.md", []runtime.Object{&api.Pod{}}},
 		{"../docs/user-guide/walkthrough/README.md", []runtime.Object{&api.Pod{}}},
 		{"../examples/iscsi/README.md", []runtime.Object{&api.Pod{}}},
-		{"../docs/user-guide/simple-yaml.md", []runtime.Object{&api.Pod{}, &api.ReplicationController{}}},
 	}
 
 	for _, path := range paths {

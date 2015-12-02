@@ -35,7 +35,7 @@ import (
 	"k8s.io/kubernetes/pkg/registry/service/portallocator"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/util"
-	"k8s.io/kubernetes/pkg/util/fielderrors"
+	utilvalidation "k8s.io/kubernetes/pkg/util/validation"
 	"k8s.io/kubernetes/pkg/watch"
 )
 
@@ -67,6 +67,7 @@ func (rs *REST) Create(ctx api.Context, obj runtime.Object) (runtime.Object, err
 		return nil, err
 	}
 
+	// TODO: this should probably move to strategy.PrepareForCreate()
 	releaseServiceIP := false
 	defer func() {
 		if releaseServiceIP {
@@ -83,7 +84,7 @@ func (rs *REST) Create(ctx api.Context, obj runtime.Object) (runtime.Object, err
 		// Allocate next available.
 		ip, err := rs.serviceIPs.AllocateNext()
 		if err != nil {
-			el := fielderrors.ValidationErrorList{fielderrors.NewFieldInvalid("spec.clusterIP", service.Spec.ClusterIP, err.Error())}
+			el := utilvalidation.ErrorList{utilvalidation.NewInvalidError("spec.clusterIP", service.Spec.ClusterIP, err.Error())}
 			return nil, errors.NewInvalid("Service", service.Name, el)
 		}
 		service.Spec.ClusterIP = ip.String()
@@ -91,7 +92,7 @@ func (rs *REST) Create(ctx api.Context, obj runtime.Object) (runtime.Object, err
 	} else if api.IsServiceIPSet(service) {
 		// Try to respect the requested IP.
 		if err := rs.serviceIPs.Allocate(net.ParseIP(service.Spec.ClusterIP)); err != nil {
-			el := fielderrors.ValidationErrorList{fielderrors.NewFieldInvalid("spec.clusterIP", service.Spec.ClusterIP, err.Error())}
+			el := utilvalidation.ErrorList{utilvalidation.NewInvalidError("spec.clusterIP", service.Spec.ClusterIP, err.Error())}
 			return nil, errors.NewInvalid("Service", service.Name, el)
 		}
 		releaseServiceIP = true
@@ -103,13 +104,13 @@ func (rs *REST) Create(ctx api.Context, obj runtime.Object) (runtime.Object, err
 		if servicePort.NodePort != 0 {
 			err := nodePortOp.Allocate(servicePort.NodePort)
 			if err != nil {
-				el := fielderrors.ValidationErrorList{fielderrors.NewFieldInvalid("nodePort", servicePort.NodePort, err.Error())}.PrefixIndex(i).Prefix("spec.ports")
+				el := utilvalidation.ErrorList{utilvalidation.NewInvalidError("nodePort", servicePort.NodePort, err.Error())}.PrefixIndex(i).Prefix("spec.ports")
 				return nil, errors.NewInvalid("Service", service.Name, el)
 			}
 		} else if assignNodePorts {
 			nodePort, err := nodePortOp.AllocateNext()
 			if err != nil {
-				el := fielderrors.ValidationErrorList{fielderrors.NewFieldInvalid("nodePort", servicePort.NodePort, err.Error())}.PrefixIndex(i).Prefix("spec.ports")
+				el := utilvalidation.ErrorList{utilvalidation.NewInvalidError("nodePort", servicePort.NodePort, err.Error())}.PrefixIndex(i).Prefix("spec.ports")
 				return nil, errors.NewInvalid("Service", service.Name, el)
 			}
 			servicePort.NodePort = nodePort
@@ -171,13 +172,13 @@ func (rs *REST) Get(ctx api.Context, id string) (runtime.Object, error) {
 	return rs.registry.GetService(ctx, id)
 }
 
-func (rs *REST) List(ctx api.Context, options *api.ListOptions) (runtime.Object, error) {
+func (rs *REST) List(ctx api.Context, options *unversioned.ListOptions) (runtime.Object, error) {
 	return rs.registry.ListServices(ctx, options)
 }
 
 // Watch returns Services events via a watch.Interface.
 // It implements rest.Watcher.
-func (rs *REST) Watch(ctx api.Context, options *api.ListOptions) (watch.Interface, error) {
+func (rs *REST) Watch(ctx api.Context, options *unversioned.ListOptions) (watch.Interface, error) {
 	return rs.registry.WatchServices(ctx, options)
 }
 
@@ -202,7 +203,7 @@ func (rs *REST) Update(ctx api.Context, obj runtime.Object) (runtime.Object, boo
 
 	// Copy over non-user fields
 	// TODO: make this a merge function
-	if errs := validation.ValidateServiceUpdate(oldService, service); len(errs) > 0 {
+	if errs := validation.ValidateServiceUpdate(service, oldService); len(errs) > 0 {
 		return nil, false, errors.NewInvalid("service", service.Name, errs)
 	}
 
@@ -222,14 +223,14 @@ func (rs *REST) Update(ctx api.Context, obj runtime.Object) (runtime.Object, boo
 				if !contains(oldNodePorts, nodePort) {
 					err := nodePortOp.Allocate(nodePort)
 					if err != nil {
-						el := fielderrors.ValidationErrorList{fielderrors.NewFieldInvalid("nodePort", nodePort, err.Error())}.PrefixIndex(i).Prefix("spec.ports")
+						el := utilvalidation.ErrorList{utilvalidation.NewInvalidError("nodePort", nodePort, err.Error())}.PrefixIndex(i).Prefix("spec.ports")
 						return nil, false, errors.NewInvalid("Service", service.Name, el)
 					}
 				}
 			} else {
 				nodePort, err = nodePortOp.AllocateNext()
 				if err != nil {
-					el := fielderrors.ValidationErrorList{fielderrors.NewFieldInvalid("nodePort", nodePort, err.Error())}.PrefixIndex(i).Prefix("spec.ports")
+					el := utilvalidation.ErrorList{utilvalidation.NewInvalidError("nodePort", nodePort, err.Error())}.PrefixIndex(i).Prefix("spec.ports")
 					return nil, false, errors.NewInvalid("Service", service.Name, el)
 				}
 				servicePort.NodePort = nodePort
@@ -283,6 +284,26 @@ func (rs *REST) ResourceLocation(ctx api.Context, id string) (*url.URL, http.Rou
 		return nil, nil, errors.NewBadRequest(fmt.Sprintf("invalid service request %q", id))
 	}
 
+	// If a port *number* was specified, find the corresponding service port name
+	if portNum, err := strconv.ParseInt(portStr, 10, 64); err == nil {
+		svc, err := rs.registry.GetService(ctx, svcName)
+		if err != nil {
+			return nil, nil, err
+		}
+		found := false
+		for _, svcPort := range svc.Spec.Ports {
+			if svcPort.Port == int(portNum) {
+				// use the declared port's name
+				portStr = svcPort.Name
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, nil, errors.NewServiceUnavailable(fmt.Sprintf("no service port %d found for service %q", portNum, svcName))
+		}
+	}
+
 	eps, err := rs.endpoints.GetEndpoints(ctx, svcName)
 	if err != nil {
 		return nil, nil, err
@@ -307,15 +328,6 @@ func (rs *REST) ResourceLocation(ctx api.Context, id string) (*url.URL, http.Rou
 					Scheme: svcScheme,
 					Host:   net.JoinHostPort(ip, strconv.Itoa(port)),
 				}, rs.proxyTransport, nil
-			} else {
-				port, err := strconv.ParseInt(portStr, 10, 64)
-				if err == nil && int(port) == ss.Ports[i].Port {
-					ip := ss.Addresses[rand.Intn(len(ss.Addresses))].IP
-					return &url.URL{
-						Scheme: svcScheme,
-						Host:   net.JoinHostPort(ip, portStr),
-					}, rs.proxyTransport, nil
-				}
 			}
 		}
 	}

@@ -31,8 +31,8 @@ import (
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/storage"
 	etcdstorage "k8s.io/kubernetes/pkg/storage/etcd"
+	"k8s.io/kubernetes/pkg/storage/etcd/etcdtest"
 	etcdtesting "k8s.io/kubernetes/pkg/storage/etcd/testing"
-	"k8s.io/kubernetes/pkg/tools/etcdtest"
 	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/pkg/util/sets"
 	"k8s.io/kubernetes/pkg/watch"
@@ -221,6 +221,32 @@ func TestWatch(t *testing.T) {
 	_ = updatePod(t, etcdStorage, podFooBis, fooUpdated)
 
 	verifyWatchEvent(t, nowWatcher, watch.Modified, podFooBis)
+}
+
+func TestWatcherTimeout(t *testing.T) {
+	server, etcdStorage := newEtcdTestStorage(t, testapi.Default.Codec(), etcdtest.PathPrefix())
+	defer server.Terminate(t)
+	cacher := newTestCacher(etcdStorage)
+
+	// Create a watcher that will not be reading any result.
+	watcher, err := cacher.WatchList(context.TODO(), "pods/ns", 1, storage.Everything)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer watcher.Stop()
+
+	// Create a second watcher that will be reading result.
+	readingWatcher, err := cacher.WatchList(context.TODO(), "pods/ns", 1, storage.Everything)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer readingWatcher.Stop()
+
+	for i := 1; i <= 22; i++ {
+		pod := makeTestPod(strconv.Itoa(i))
+		_ = updatePod(t, etcdStorage, pod, nil)
+		verifyWatchEvent(t, readingWatcher, watch.Added, pod)
+	}
 }
 
 func TestFiltering(t *testing.T) {

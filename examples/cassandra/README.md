@@ -19,8 +19,8 @@ If you are using a released version of Kubernetes, you should
 refer to the docs that go with that version.
 
 <strong>
-The latest 1.0.x release of this document can be found
-[here](http://releases.k8s.io/release-1.0/examples/cassandra/README.md).
+The latest release of this document can be found
+[here](http://releases.k8s.io/release-1.1/examples/cassandra/README.md).
 
 Documentation for other releases can be found at
 [releases.k8s.io](http://releases.k8s.io).
@@ -59,16 +59,14 @@ apiVersion: v1
 kind: ReplicationController
 metadata:
   labels:
-    name: cassandra
+    app: cassandra
   name: cassandra
 spec:
   replicas: 1
-  selector:
-    name: cassandra
   template:
     metadata:
       labels:
-        name: cassandra
+        app: cassandra
     spec:
       containers:
         - command:
@@ -122,13 +120,13 @@ apiVersion: v1
 kind: Service
 metadata:
   labels:
-    name: cassandra
+    app: cassandra
   name: cassandra
 spec:
   ports:
     - port: 9042
   selector:
-    name: cassandra
+    app: cassandra
 ```
 
 [Download example](cassandra-service.yaml?raw=true)
@@ -165,7 +163,7 @@ kind: Endpoints
 metadata:
   creationTimestamp: 2015-06-21T22:34:12Z
   labels:
-    name: cassandra
+    app: cassandra
   name: cassandra
   namespace: default
   resourceVersion: "944373"
@@ -200,16 +198,14 @@ apiVersion: v1
 kind: ReplicationController
 metadata:
   labels:
-    name: cassandra
+    app: cassandra
   name: cassandra
 spec:
   replicas: 1
-  selector:
-    name: cassandra
   template:
     metadata:
       labels:
-        name: cassandra
+        app: cassandra
     spec:
       containers:
         - command:
