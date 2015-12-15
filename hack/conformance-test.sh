@@ -83,5 +83,10 @@ echo "Conformance test checking conformance with Kubernetes version 1.0"
 
 declare -x KUBERNETES_CONFORMANCE_TEST="y"
 declare -x NUM_MINIONS=4
-hack/ginkgo-e2e.sh -ginkgo.focus='\[Conformance\]' -ginkgo.skip='\[Skipped\]'
+#exec hack/ginkgo-e2e.sh -ginkgo.focus='\[Conformance\]' -ginkgo.skip='\[Skipped\]' ${TEST_ARGS}
+exec hack/ginkgo-e2e.sh -ginkgo.focus='Density'
+#hack/ginkgo-e2e.sh -ginkgo.focus='\[Conformance\]'
+#hack/ginkgo-e2e.sh -ginkgo.focus='EmptyDir volumes[\w\s]*FSGroup' -ginkgo.skip='Skip'
+#hack/ginkgo-e2e.sh -ginkgo.focus='EmptyDir volumes[\w\s]*FSGroup' 
+#exec hack/ginkgo-e2e.sh -ginkgo.focus='\[Conformance\]' -ginkgo.skip='\[Skipped\]' ${TEST_ARGS}
 exit $?

@@ -61,6 +61,9 @@ www/master/node_modules/
 www/master/npm-debug.log
 www/master/shared/config/development.json
 
+# testing runs
+*.log
+
 # Karma output
 www/test_out
 
