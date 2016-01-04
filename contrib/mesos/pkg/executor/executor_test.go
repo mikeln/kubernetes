@@ -175,6 +175,7 @@ func TestExecutorLaunchAndKillTask(t *testing.T) {
 		pod,
 		executorinfo,
 		nil,
+		nil,
 	)
 
 	assert.Equal(t, nil, err, "must be able to create a task from a pod")
@@ -390,6 +391,7 @@ func TestExecutorFrameworkMessage(t *testing.T) {
 		pod,
 		executorinfo,
 		nil,
+		nil,
 	)
 
 	podTask.Spec = &podtask.Spec{
@@ -456,7 +458,7 @@ func TestExecutorFrameworkMessage(t *testing.T) {
 func NewTestPod(i int) *api.Pod {
 	name := fmt.Sprintf("pod%d", i)
 	return &api.Pod{
-		TypeMeta: unversioned.TypeMeta{APIVersion: testapi.Default.Version()},
+		TypeMeta: unversioned.TypeMeta{APIVersion: testapi.Default.GroupVersion().String()},
 		ObjectMeta: api.ObjectMeta{
 			Name:      name,
 			Namespace: api.NamespaceDefault,
@@ -520,10 +522,10 @@ func NewMockPodsListWatch(initialPodList api.PodList) *MockPodsListWatch {
 		list:        initialPodList,
 	}
 	lw.ListWatch = cache.ListWatch{
-		WatchFunc: func(options unversioned.ListOptions) (watch.Interface, error) {
+		WatchFunc: func(options api.ListOptions) (watch.Interface, error) {
 			return lw.fakeWatcher, nil
 		},
-		ListFunc: func() (runtime.Object, error) {
+		ListFunc: func(options api.ListOptions) (runtime.Object, error) {
 			return &lw.list, nil
 		},
 	}
@@ -607,4 +609,78 @@ func TestExecutorsendFrameworkMessage(t *testing.T) {
 		t.Fatalf("expected call to SendFrameworkMessage")
 	}
 	mockDriver.AssertExpectations(t)
+}
+
+func TestExecutor_updateMetaMap(t *testing.T) {
+	for i, tc := range []struct {
+		oldmap map[string]string
+		newmap map[string]string
+		wants  bool
+	}{
+		{
+			oldmap: nil,
+			newmap: nil,
+			wants:  false,
+		},
+		{
+			oldmap: nil,
+			newmap: map[string]string{},
+			wants:  false,
+		},
+		{
+			oldmap: map[string]string{},
+			newmap: nil,
+			wants:  false,
+		},
+		{
+			oldmap: nil,
+			newmap: map[string]string{
+				"foo": "bar",
+			},
+			wants: true,
+		},
+		{
+			oldmap: map[string]string{},
+			newmap: map[string]string{
+				"foo": "bar",
+			},
+			wants: true,
+		},
+		{
+			oldmap: map[string]string{
+				"baz": "qax",
+			},
+			newmap: map[string]string{
+				"foo": "bar",
+			},
+			wants: true,
+		},
+		{
+			oldmap: map[string]string{
+				"baz": "qax",
+			},
+			newmap: nil,
+			wants:  true,
+		},
+		{
+			oldmap: map[string]string{
+				"baz": "qax",
+				"qwe": "iop",
+			},
+			newmap: map[string]string{
+				"foo": "bar",
+				"qwe": "iop",
+			},
+			wants: true,
+		},
+	} {
+		// do work here
+		actual := updateMetaMap(&tc.oldmap, tc.newmap)
+		if actual != tc.wants {
+			t.Fatalf("test case %d failed, expected %v but got %v instead", i, tc.wants, actual)
+		}
+		if len(tc.oldmap) != len(tc.newmap) || (len(tc.oldmap) > 0 && !reflect.DeepEqual(tc.oldmap, tc.newmap)) {
+			t.Fatalf("test case %d failed, expected %v but got %v instead", i, tc.newmap, tc.oldmap)
+		}
+	}
 }

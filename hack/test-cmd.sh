@@ -224,6 +224,8 @@ runTests() {
   hpa_cpu_field=".spec.cpuUtilization.targetPercentage"
   job_parallelism_field=".spec.parallelism"
   deployment_replicas=".spec.replicas"
+  secret_data=".data"
+  secret_type=".type"
 
   # Passing no arguments to create is an error
   ! kubectl create
@@ -281,9 +283,12 @@ runTests() {
   kube::test::get_object_jsonpath_assert 'pod/valid-pod' "{$id_field}" 'valid-pod'
   kube::test::get_object_jsonpath_assert 'pods/valid-pod' "{$id_field}" 'valid-pod'
   # Describe command should print detailed information
-  kube::test::describe_object_assert pods 'valid-pod' "Name:" "Image(s):" "Node:" "Labels:" "Status:" "Replication Controllers"
+  kube::test::describe_object_assert pods 'valid-pod' "Name:" "Image(s):" "Node:" "Labels:" "Status:" "Controllers"
   # Describe command (resource only) should print detailed information
-  kube::test::describe_resource_assert pods "Name:" "Image(s):" "Node:" "Labels:" "Status:" "Replication Controllers"
+  kube::test::describe_resource_assert pods "Name:" "Image(s):" "Node:" "Labels:" "Status:" "Controllers"
+
+  ### Validate Export ###
+  kube::test::get_object_assert 'pods/valid-pod' "{{.metadata.namespace}} {{.metadata.name}}" '<no value> valid-pod' "--export=true"
 
   ### Dump current valid-pod POD
   output_pod=$(kubectl get pod valid-pod -o yaml --output-version=v1 "${kube_flags[@]}")
@@ -638,7 +643,7 @@ runTests() {
   # Post-Condition: hpa "frontend" has configuration annotation
   [[ "$(kubectl get hpa frontend -o yaml "${kube_flags[@]}" | grep kubectl.kubernetes.io/last-applied-configuration)" ]]
   # Clean up
-  kubectl delete rc,hpa frontend
+  kubectl delete rc,hpa frontend "${kube_flags[@]}"
 
   ## kubectl apply should create the resource that doesn't exist yet
   # Pre-Condition: no POD is running 
@@ -656,22 +661,37 @@ runTests() {
   # Pre-Condition: no Job is running 
   kube::test::get_object_assert jobs "{{range.items}}{{$id_field}}:{{end}}" ''
   # Command
-  kubectl run pi --image=perl --restart=OnFailure -- perl -Mbignum=bpi -wle 'print bpi(20)'
+  kubectl run pi --image=perl --restart=OnFailure -- perl -Mbignum=bpi -wle 'print bpi(20)' "${kube_flags[@]}"
   # Post-Condition: Job "pi" is created 
   kube::test::get_object_assert jobs "{{range.items}}{{$id_field}}:{{end}}" 'pi:'
   # Clean up
-  kubectl delete jobs pi
+  kubectl delete jobs pi "${kube_flags[@]}"
   # Pre-Condition: no Deployment is running 
   kube::test::get_object_assert deployment "{{range.items}}{{$id_field}}:{{end}}" ''
   # Command
-  kubectl run nginx --image=nginx --generator=deployment/v1beta1
+  kubectl run nginx --image=nginx --generator=deployment/v1beta1 "${kube_flags[@]}"
   # Post-Condition: Deployment "nginx" is created 
   kube::test::get_object_assert deployment "{{range.items}}{{$id_field}}:{{end}}" 'nginx:'
   # Clean up 
-  kubectl delete deployment nginx
+  kubectl delete deployment nginx "${kube_flags[@]}"
+  kubectl delete rc -l deployment.kubernetes.io/podTemplateHash "${kube_flags[@]}"
 
   ##############
   # Namespaces #
+  ##############
+
+  ### Create a new namespace
+  # Pre-condition: only the "default" namespace exists
+  kube::test::get_object_assert 'namespaces' "{{range.items}}{{$id_field}}:{{end}}" 'default:'
+  # Command
+  kubectl create namespace my-namespace
+  # Post-condition: namespace 'my-namespace' is created.
+  kube::test::get_object_assert 'namespaces/my-namespace' "{{$id_field}}" 'my-namespace'
+  # Clean up
+  kubectl delete namespace my-namespace
+
+  ##############
+  # Pods in Namespaces #
   ##############
 
   ### Create POD valid-pod in specific namespace
@@ -690,6 +710,33 @@ runTests() {
   # Post-condition: no POD is running
   kube::test::get_object_assert 'pods --namespace=other' "{{range.items}}{{$id_field}}:{{end}}" ''
 
+  ##############
+  # Secrets #
+  ##############
+
+  ### Create a generic secret in a specific namespace
+  # Pre-condition: no SECRET exists
+  kube::test::get_object_assert 'secrets --namespace=test-secrets' "{{range.items}}{{$id_field}}:{{end}}" ''
+  # Command
+  kubectl create secret generic test-secret --from-literal=key1=value1 --type=test-type --namespace=test-secrets
+  # Post-condition: secret exists and has expected values
+  kube::test::get_object_assert 'secret/test-secret --namespace=test-secrets' "{{$id_field}}" 'test-secret'
+  kube::test::get_object_assert 'secret/test-secret --namespace=test-secrets' "{{$secret_type}}" 'test-type'
+  [[ "$(kubectl get secret/test-secret --namespace=test-secrets -o yaml "${kube_flags[@]}" | grep 'key1: dmFsdWUx')" ]]
+  # Clean-up
+  kubectl delete secret test-secret --namespace=test-secrets
+
+  ### Create a docker-registry secret in a specific namespace
+  # Pre-condition: no SECRET exists
+  kube::test::get_object_assert 'secrets --namespace=test-secrets' "{{range.items}}{{$id_field}}:{{end}}" ''
+  # Command
+  kubectl create secret docker-registry test-secret --docker-username=test-user --docker-password=test-password --docker-email='test-user@test.com' --namespace=test-secrets
+  # Post-condition: secret exists and has expected values
+  kube::test::get_object_assert 'secret/test-secret --namespace=test-secrets' "{{$id_field}}" 'test-secret'
+  kube::test::get_object_assert 'secret/test-secret --namespace=test-secrets' "{{$secret_type}}" 'kubernetes.io/dockercfg'
+  [[ "$(kubectl get secret/test-secret --namespace=test-secrets -o yaml "${kube_flags[@]}" | grep '.dockercfg:')" ]]
+  # Clean-up
+  kubectl delete secret test-secret --namespace=test-secrets
 
   #################
   # Pod templates #
@@ -937,7 +984,7 @@ __EOF__
   # Pre-condition: use --name flag
   output_message=$(! kubectl expose -f hack/testdata/pod-with-large-name.yaml --name=invalid-large-service-name --port=8081 2>&1 "${kube_flags[@]}")
   # Post-condition: should fail due to invalid name
-  kube::test::if_has_string "${output_message}" 'metadata.name: invalid value'
+  kube::test::if_has_string "${output_message}" 'metadata.name: Invalid value'
   # Pre-condition: default run without --name flag; should succeed by truncating the inherited name
   output_message=$(kubectl expose -f hack/testdata/pod-with-large-name.yaml --port=8081 2>&1 "${kube_flags[@]}")
   # Post-condition: inherited name from pod has been truncated
@@ -1007,11 +1054,12 @@ __EOF__
   kubectl create -f examples/extensions/deployment.yaml "${kube_flags[@]}"
   kube::test::get_object_assert deployment "{{range.items}}{{$id_field}}:{{end}}" 'nginx-deployment:'
   # autoscale 2~3 pods, default CPU utilization (80%)
-  kubectl autoscale deployment nginx-deployment "${kube_flags[@]}" --min=2 --max=3
+  kubectl-with-retry autoscale deployment nginx-deployment "${kube_flags[@]}" --min=2 --max=3
   kube::test::get_object_assert 'hpa nginx-deployment' "{{$hpa_min_field}} {{$hpa_max_field}} {{$hpa_cpu_field}}" '2 3 80'
   # Clean up
   kubectl delete hpa nginx-deployment "${kube_flags[@]}"
   kubectl delete deployment nginx-deployment "${kube_flags[@]}"
+  kubectl delete rc -l deployment.kubernetes.io/podTemplateHash "${kube_flags[@]}"
 
   ######################
   # Multiple Resources #
@@ -1244,6 +1292,17 @@ __EOF__
   kubectl create -f examples/cassandra/cassandra-service.yaml "${kube_flags[@]}"
   kube::test::get_object_assert "all -l'app=cassandra'" "{{range.items}}{{range .metadata.labels}}{{.}}:{{end}}{{end}}" 'cassandra:cassandra:cassandra:'
   kubectl delete all -l app=cassandra "${kube_flags[@]}"
+
+
+  ###########
+  # Explain #
+  ###########
+
+  kube::log::status "Testing kubectl(${version}:explain)"
+  kubectl explain pods
+  # shortcuts work
+  kubectl explain po
+  kubectl explain po.status.message
 
 
   ###########

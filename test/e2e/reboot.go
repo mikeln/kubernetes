@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/unversioned"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/fields"
 	"k8s.io/kubernetes/pkg/labels"
@@ -45,7 +44,7 @@ const (
 	rebootPodReadyAgainTimeout = 5 * time.Minute
 )
 
-var _ = Describe("Reboot", func() {
+var _ = Describe("Reboot [Disruptive]", func() {
 	var f *Framework
 
 	BeforeEach(func() {
@@ -62,7 +61,7 @@ var _ = Describe("Reboot", func() {
 			// events for the kube-system namespace on failures
 			namespaceName := api.NamespaceSystem
 			By(fmt.Sprintf("Collecting events from namespace %q.", namespaceName))
-			events, err := f.Client.Events(namespaceName).List(labels.Everything(), fields.Everything(), unversioned.ListOptions{})
+			events, err := f.Client.Events(namespaceName).List(api.ListOptions{})
 			Expect(err).NotTo(HaveOccurred())
 
 			for _, e := range events.Items {
@@ -116,10 +115,7 @@ var _ = Describe("Reboot", func() {
 
 func testReboot(c *client.Client, rebootCmd string) {
 	// Get all nodes, and kick off the test on each.
-	nodelist, err := listNodes(c, labels.Everything(), fields.Everything())
-	if err != nil {
-		Failf("Error getting nodes: %v", err)
-	}
+	nodelist := ListSchedulableNodesOrDie(c)
 	result := make([]bool, len(nodelist.Items))
 	wg := sync.WaitGroup{}
 	wg.Add(len(nodelist.Items))

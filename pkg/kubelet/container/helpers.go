@@ -23,6 +23,7 @@ import (
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/client/record"
+	"k8s.io/kubernetes/pkg/kubelet/util/format"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/third_party/golang/expansion"
@@ -43,9 +44,35 @@ type RunContainerOptionsGenerator interface {
 
 // ShouldContainerBeRestarted checks whether a container needs to be restarted.
 // TODO(yifan): Think about how to refactor this.
-func ShouldContainerBeRestarted(container *api.Container, pod *api.Pod, podStatus *api.PodStatus) bool {
-	podFullName := GetPodFullName(pod)
+func ShouldContainerBeRestarted(container *api.Container, pod *api.Pod, podStatus *PodStatus) bool {
+	// Get all dead container status.
+	var resultStatus []*ContainerStatus
+	for _, containerStatus := range podStatus.ContainerStatuses {
+		if containerStatus.Name == container.Name && containerStatus.State == ContainerStateExited {
+			resultStatus = append(resultStatus, containerStatus)
+		}
+	}
 
+	// Check RestartPolicy for dead container.
+	if len(resultStatus) > 0 {
+		if pod.Spec.RestartPolicy == api.RestartPolicyNever {
+			glog.V(4).Infof("Already ran container %q of pod %q, do nothing", container.Name, format.Pod(pod))
+			return false
+		}
+		if pod.Spec.RestartPolicy == api.RestartPolicyOnFailure {
+			// Check the exit code of last run. Note: This assumes the result is sorted
+			// by the created time in reverse order.
+			if resultStatus[0].ExitCode == 0 {
+				glog.V(4).Infof("Already successfully ran container %q of pod %q, do nothing", container.Name, format.Pod(pod))
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// TODO(random-liu): This should be removed soon after rkt implements GetPodStatus.
+func ShouldContainerBeRestartedOldVersion(container *api.Container, pod *api.Pod, podStatus *api.PodStatus) bool {
 	// Get all dead container status.
 	var resultStatus []*api.ContainerStatus
 	for i, containerStatus := range podStatus.ContainerStatuses {
@@ -57,19 +84,43 @@ func ShouldContainerBeRestarted(container *api.Container, pod *api.Pod, podStatu
 	// Check RestartPolicy for dead container.
 	if len(resultStatus) > 0 {
 		if pod.Spec.RestartPolicy == api.RestartPolicyNever {
-			glog.V(4).Infof("Already ran container %q of pod %q, do nothing", container.Name, podFullName)
+			glog.V(4).Infof("Already ran container %q of pod %q, do nothing", container.Name, format.Pod(pod))
 			return false
 		}
 		if pod.Spec.RestartPolicy == api.RestartPolicyOnFailure {
 			// Check the exit code of last run. Note: This assumes the result is sorted
 			// by the created time in reverse order.
 			if resultStatus[0].State.Terminated.ExitCode == 0 {
-				glog.V(4).Infof("Already successfully ran container %q of pod %q, do nothing", container.Name, podFullName)
+				glog.V(4).Infof("Already successfully ran container %q of pod %q, do nothing", container.Name, format.Pod(pod))
 				return false
 			}
 		}
 	}
 	return true
+}
+
+// TODO(random-liu): Convert PodStatus to running Pod, should be deprecated soon
+func ConvertPodStatusToRunningPod(podStatus *PodStatus) Pod {
+	runningPod := Pod{
+		ID:        podStatus.ID,
+		Name:      podStatus.Name,
+		Namespace: podStatus.Namespace,
+	}
+	for _, containerStatus := range podStatus.ContainerStatuses {
+		if containerStatus.State != ContainerStateRunning {
+			continue
+		}
+		container := &Container{
+			ID:      containerStatus.ID,
+			Name:    containerStatus.Name,
+			Image:   containerStatus.Image,
+			Hash:    containerStatus.Hash,
+			Created: containerStatus.CreatedAt.Unix(),
+			State:   containerStatus.State,
+		}
+		runningPod.Containers = append(runningPod.Containers, container)
+	}
+	return runningPod
 }
 
 // HashContainer returns the hash of the container. It is used to compare

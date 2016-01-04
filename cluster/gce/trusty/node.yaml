@@ -137,6 +137,7 @@ script
 		--configure-cbr0=true \
 		--cgroup-root=/ \
 		--system-container=/system \
+		--nosystemd=true \
 		${ARGS}
 end script
 
@@ -218,19 +219,19 @@ script
 	set -o errexit
 	set -o nounset
 
-	# Configuration files are located at /etc/saltbase.
+	# Kube-system pod manifest files are located at /run/kube-manifests/kubernetes.
 	. /etc/kube-env
 	# Fluentd
 	if [ "${ENABLE_NODE_LOGGING:-}" = "true" ]; then
 		if [ "${LOGGING_DESTINATION:-}" = "gcp" ]; then
-			cp /etc/saltbase/kubernetes/saltbase/salt/fluentd-gcp/fluentd-gcp.yaml /etc/kubernetes/manifests/
+			cp /run/kube-manifests/kubernetes/fluentd-gcp.yaml /etc/kubernetes/manifests/
 		elif [ "${LOGGING_DESTINATION:-}" = "elasticsearch" ]; then
-			cp /etc/saltbase/kubernetes/saltbase/salt/fluentd-es/fluentd-es.yaml /etc/kubernetes/manifests/
+			cp /run/kube-manifests/kubernetes/fluentd-es.yaml /etc/kubernetes/manifests/
 		fi
 	fi
 	# Kube-registry-proxy
 	if [ "${ENABLE_CLUSTER_REGISTRY:-}" = "true" ]; then
-		cp /etc/saltbase/kubernetes/saltbase/salt/kube-registry-proxy/kube-registry-proxy.yaml /etc/kubernetes/manifests/
+		cp /run/kube-manifests/kubernetes/kube-registry-proxy.yaml /etc/kubernetes/manifests/
 	fi
 end script
 
@@ -262,7 +263,8 @@ script
 			echo "Docker daemon failed!"
 			pkill docker
 		fi
-		if ! curl --insecure -m ${max_seconds} -f -s https://127.0.0.1:10250/healthz > /dev/null; then
+		. /etc/kube-env
+		if ! curl --insecure -m ${max_seconds} -f -s https://127.0.0.1:${KUBELET_PORT:-10250}/healthz > /dev/null; then
 			echo "Kubelet is unhealthy!"
 			pkill kubelet
 		fi

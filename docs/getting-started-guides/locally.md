@@ -18,6 +18,7 @@
 If you are using a released version of Kubernetes, you should
 refer to the docs that go with that version.
 
+<!-- TAG RELEASE_LINK, added by the munger automatically -->
 <strong>
 The latest release of this document can be found
 [here](http://releases.k8s.io/release-1.1/docs/getting-started-guides/locally.md).
@@ -70,7 +71,7 @@ You need an [etcd](https://github.com/coreos/etcd/releases) in your path, please
 
 #### go
 
-You need [go](https://golang.org/doc/install) at least 1.3+ in your path, please make sure it is installed and in your ``$PATH``.
+You need [go](https://golang.org/doc/install) in your path (see [here](../devel/development.md#go-versions) for supported versions), please make sure it is installed and in your ``$PATH``.
 
 ### Clone the repository
 

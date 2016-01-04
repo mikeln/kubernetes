@@ -45,6 +45,7 @@ import (
 	"k8s.io/kubernetes/pkg/util/sets"
 
 	"github.com/golang/glog"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 )
 
 const ProviderName = "aws"
@@ -57,6 +58,11 @@ const TagNameKubernetesCluster = "KubernetesCluster"
 // In an eventually consistent system, it could fail unboundedly
 // MaxReadThenCreateRetries sets the maximum number of attempts we will make
 const MaxReadThenCreateRetries = 30
+
+// Default volume type for newly created Volumes
+// TODO: Remove when user/admin can configure volume types and thus we don't
+// need hardcoded defaults.
+const DefaultVolumeType = "gp2"
 
 // Abstraction over AWS, to allow mocking/other implementations
 type AWSServices interface {
@@ -135,7 +141,8 @@ type EC2Metadata interface {
 }
 
 type VolumeOptions struct {
-	CapacityMB int
+	CapacityGB int
+	Tags       *map[string]string
 }
 
 // Volumes is an interface for managing cloud-provisioned volumes
@@ -152,6 +159,9 @@ type Volumes interface {
 	// Create a volume with the specified options
 	CreateVolume(volumeOptions *VolumeOptions) (volumeName string, err error)
 	DeleteVolume(volumeName string) error
+
+	// Get labels to apply to volume on creation
+	GetVolumeLabels(volumeName string) (map[string]string, error)
 }
 
 // InstanceGroups is an interface for managing cloud-managed instance groups / autoscaling instance groups
@@ -504,6 +514,16 @@ func isRegionValid(region string) bool {
 	return false
 }
 
+// Derives the region from a valid az name.
+// Returns an error if the az is known invalid (empty)
+func azToRegion(az string) (string, error) {
+	if len(az) < 1 {
+		return "", fmt.Errorf("invalid (empty) AZ")
+	}
+	region := az[:len(az)-1]
+	return region, nil
+}
+
 // newAWSCloud creates a new instance of AWSCloud.
 // AWSProvider and instanceId are primarily for tests
 func newAWSCloud(config io.Reader, awsServices AWSServices) (*AWSCloud, error) {
@@ -521,7 +541,10 @@ func newAWSCloud(config io.Reader, awsServices AWSServices) (*AWSCloud, error) {
 	if len(zone) <= 1 {
 		return nil, fmt.Errorf("invalid AWS zone in config file: %s", zone)
 	}
-	regionName := zone[:len(zone)-1]
+	regionName, err := azToRegion(zone)
+	if err != nil {
+		return nil, err
+	}
 
 	valid := isRegionValid(regionName)
 	if !valid {
@@ -1216,15 +1239,15 @@ func (aws *AWSCloud) DetachDisk(instanceName string, diskName string) error {
 }
 
 // Implements Volumes.CreateVolume
-func (aws *AWSCloud) CreateVolume(volumeOptions *VolumeOptions) (string, error) {
+func (s *AWSCloud) CreateVolume(volumeOptions *VolumeOptions) (string, error) {
 	// TODO: Should we tag this with the cluster id (so it gets deleted when the cluster does?)
-	// This is only used for testing right now
 
 	request := &ec2.CreateVolumeInput{}
-	request.AvailabilityZone = &aws.availabilityZone
-	volSize := (int64(volumeOptions.CapacityMB) + 1023) / 1024
+	request.AvailabilityZone = &s.availabilityZone
+	volSize := int64(volumeOptions.CapacityGB)
 	request.Size = &volSize
-	response, err := aws.ec2.CreateVolume(request)
+	request.VolumeType = aws.String(DefaultVolumeType)
+	response, err := s.ec2.CreateVolume(request)
 	if err != nil {
 		return "", err
 	}
@@ -1234,6 +1257,28 @@ func (aws *AWSCloud) CreateVolume(volumeOptions *VolumeOptions) (string, error) 
 
 	volumeName := "aws://" + az + "/" + awsID
 
+	// apply tags
+	if volumeOptions.Tags != nil {
+		tags := []*ec2.Tag{}
+		for k, v := range *volumeOptions.Tags {
+			tag := &ec2.Tag{}
+			tag.Key = aws.String(k)
+			tag.Value = aws.String(v)
+			tags = append(tags, tag)
+		}
+		tagRequest := &ec2.CreateTagsInput{}
+		tagRequest.Resources = []*string{&awsID}
+		tagRequest.Tags = tags
+		if _, err := s.createTags(tagRequest); err != nil {
+			// delete the volume and hope it succeeds
+			delerr := s.DeleteVolume(volumeName)
+			if delerr != nil {
+				// delete did not succeed, we have a stray volume!
+				return "", fmt.Errorf("error tagging volume %s, could not delete the volume: %v", volumeName, delerr)
+			}
+			return "", fmt.Errorf("error tagging volume %s: %v", volumeName, err)
+		}
+	}
 	return volumeName, nil
 }
 
@@ -1244,6 +1289,32 @@ func (aws *AWSCloud) DeleteVolume(volumeName string) error {
 		return err
 	}
 	return awsDisk.deleteVolume()
+}
+
+// Implements Volumes.GetVolumeLabels
+func (c *AWSCloud) GetVolumeLabels(volumeName string) (map[string]string, error) {
+	awsDisk, err := newAWSDisk(c, volumeName)
+	if err != nil {
+		return nil, err
+	}
+	info, err := awsDisk.getInfo()
+	if err != nil {
+		return nil, err
+	}
+	labels := make(map[string]string)
+	az := aws.StringValue(info.AvailabilityZone)
+	if az == "" {
+		return nil, fmt.Errorf("volume did not have AZ information: %q", info.VolumeId)
+	}
+
+	labels[unversioned.LabelZoneFailureDomain] = az
+	region, err := azToRegion(az)
+	if err != nil {
+		return nil, err
+	}
+	labels[unversioned.LabelZoneRegion] = region
+
+	return labels, nil
 }
 
 func (v *AWSCloud) Configure(name string, spec *api.NodeSpec) error {

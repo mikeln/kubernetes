@@ -504,7 +504,7 @@ func TestResourceByNameAndEmptySelector(t *testing.T) {
 
 func TestSelector(t *testing.T) {
 	pods, svc := testData()
-	labelKey := unversioned.LabelSelectorQueryParam(testapi.Default.Version())
+	labelKey := unversioned.LabelSelectorQueryParam(testapi.Default.GroupVersion().String())
 	b := NewBuilder(testapi.Default.RESTMapper(), api.Scheme, fakeClientWith("", t, map[string]string{
 		"/namespaces/test/pods?" + labelKey + "=a%3Db":     runtime.EncodeOrDie(testapi.Default.Codec(), pods),
 		"/namespaces/test/services?" + labelKey + "=a%3Db": runtime.EncodeOrDie(testapi.Default.Codec(), svc),
@@ -799,7 +799,7 @@ func TestSingularRootScopedObject(t *testing.T) {
 
 func TestListObject(t *testing.T) {
 	pods, _ := testData()
-	labelKey := unversioned.LabelSelectorQueryParam(testapi.Default.Version())
+	labelKey := unversioned.LabelSelectorQueryParam(testapi.Default.GroupVersion().String())
 	b := NewBuilder(testapi.Default.RESTMapper(), api.Scheme, fakeClientWith("", t, map[string]string{
 		"/namespaces/test/pods?" + labelKey + "=a%3Db": runtime.EncodeOrDie(testapi.Default.Codec(), pods),
 	})).
@@ -832,7 +832,7 @@ func TestListObject(t *testing.T) {
 
 func TestListObjectWithDifferentVersions(t *testing.T) {
 	pods, svc := testData()
-	labelKey := unversioned.LabelSelectorQueryParam(testapi.Default.Version())
+	labelKey := unversioned.LabelSelectorQueryParam(testapi.Default.GroupVersion().String())
 	obj, err := NewBuilder(testapi.Default.RESTMapper(), api.Scheme, fakeClientWith("", t, map[string]string{
 		"/namespaces/test/pods?" + labelKey + "=a%3Db":     runtime.EncodeOrDie(testapi.Default.Codec(), pods),
 		"/namespaces/test/services?" + labelKey + "=a%3Db": runtime.EncodeOrDie(testapi.Default.Codec(), svc),
@@ -1000,6 +1000,64 @@ func TestReplaceAliases(t *testing.T) {
 		replaced := b.replaceAliases(test.arg)
 		if replaced != test.expected {
 			t.Errorf("%s: unexpected argument: expected %s, got %s", test.name, test.expected, replaced)
+		}
+	}
+}
+
+func TestHasNames(t *testing.T) {
+	tests := []struct {
+		args            []string
+		expectedHasName bool
+		expectedError   error
+	}{
+		{
+			args:            []string{""},
+			expectedHasName: false,
+			expectedError:   nil,
+		},
+		{
+			args:            []string{"rc"},
+			expectedHasName: false,
+			expectedError:   nil,
+		},
+		{
+			args:            []string{"rc,pod,svc"},
+			expectedHasName: false,
+			expectedError:   nil,
+		},
+		{
+			args:            []string{"rc/foo"},
+			expectedHasName: true,
+			expectedError:   nil,
+		},
+		{
+			args:            []string{"rc", "foo"},
+			expectedHasName: true,
+			expectedError:   nil,
+		},
+		{
+			args:            []string{"rc,pod,svc", "foo"},
+			expectedHasName: true,
+			expectedError:   nil,
+		},
+		{
+			args:            []string{"rc/foo", "rc/bar", "rc/zee"},
+			expectedHasName: true,
+			expectedError:   nil,
+		},
+		{
+			args:            []string{"rc/foo", "bar"},
+			expectedHasName: false,
+			expectedError:   fmt.Errorf("when passing arguments in resource/name form, all arguments must include the resource"),
+		},
+	}
+	for _, test := range tests {
+		hasNames, err := HasNames(test.args)
+		if !reflect.DeepEqual(test.expectedError, err) {
+			t.Errorf("expected HasName to error %v, got %s", test.expectedError, err)
+		}
+		if hasNames != test.expectedHasName {
+			t.Errorf("expected HasName to return %v for %s", test.expectedHasName, test.args)
 		}
 	}
 }

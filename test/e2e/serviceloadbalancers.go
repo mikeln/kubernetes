@@ -23,9 +23,7 @@ import (
 	"path/filepath"
 
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/unversioned"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
-	"k8s.io/kubernetes/pkg/fields"
 	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/util/wait"
 	utilyaml "k8s.io/kubernetes/pkg/util/yaml"
@@ -112,8 +110,8 @@ func (h *haproxyControllerTester) start(namespace string) (err error) {
 	// Find the pods of the rc we just created.
 	labelSelector := labels.SelectorFromSet(
 		labels.Set(map[string]string{"name": h.rcName}))
-	pods, err := h.client.Pods(h.rcNamespace).List(
-		labelSelector, fields.Everything(), unversioned.ListOptions{})
+	options := api.ListOptions{LabelSelector: labelSelector}
+	pods, err := h.client.Pods(h.rcNamespace).List(options)
 	if err != nil {
 		return err
 	}

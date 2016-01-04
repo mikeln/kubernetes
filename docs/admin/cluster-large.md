@@ -18,6 +18,7 @@
 If you are using a released version of Kubernetes, you should
 refer to the docs that go with that version.
 
+<!-- TAG RELEASE_LINK, added by the munger automatically -->
 <strong>
 The latest release of this document can be found
 [here](http://releases.k8s.io/release-1.1/docs/admin/cluster-large.md).
@@ -61,6 +62,16 @@ To avoid running into cloud provider quota issues, when creating a cluster with 
     * Routes
     * Target pools
 * Gating the setup script so that it brings up new node VMs in smaller batches with waits in between, because some cloud providers rate limit the creation of VMs.
+
+### Etcd storage
+
+To improve performance of large clusters, we store events in a separate dedicated etcd instance.
+
+When creating a cluster, existing salt scripts:
+* start and configure additional etcd instance
+* configure api-server to use it for storing events
+
+However, this is done only for clusters having more than 50 nodes.
 
 ### Addon Resources
 

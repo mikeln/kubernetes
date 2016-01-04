@@ -30,13 +30,11 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/errors"
-	"k8s.io/kubernetes/pkg/api/unversioned"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
-	"k8s.io/kubernetes/pkg/fields"
-	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/types"
 	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/pkg/util/intstr"
+	"k8s.io/kubernetes/pkg/util/sets"
 	"k8s.io/kubernetes/pkg/util/wait"
 )
 
@@ -236,14 +234,14 @@ var _ = Describe("Services", func() {
 		}
 		host := hosts[0]
 
-		expectNoError(verifyServeHostnameServiceUp(c, host, podNames1, svc1IP, servicePort))
-		expectNoError(verifyServeHostnameServiceUp(c, host, podNames2, svc2IP, servicePort))
+		expectNoError(verifyServeHostnameServiceUp(c, ns, host, podNames1, svc1IP, servicePort))
+		expectNoError(verifyServeHostnameServiceUp(c, ns, host, podNames2, svc2IP, servicePort))
 
 		// Stop service 1 and make sure it is gone.
 		expectNoError(stopServeHostnameService(c, ns, "service1"))
 
 		expectNoError(verifyServeHostnameServiceDown(c, host, svc1IP, servicePort))
-		expectNoError(verifyServeHostnameServiceUp(c, host, podNames2, svc2IP, servicePort))
+		expectNoError(verifyServeHostnameServiceUp(c, ns, host, podNames2, svc2IP, servicePort))
 
 		// Start another service and verify both are up.
 		podNames3, svc3IP, err := startServeHostnameService(c, ns, "service3", servicePort, numPods)
@@ -253,14 +251,14 @@ var _ = Describe("Services", func() {
 			Failf("VIPs conflict: %v", svc2IP)
 		}
 
-		expectNoError(verifyServeHostnameServiceUp(c, host, podNames2, svc2IP, servicePort))
-		expectNoError(verifyServeHostnameServiceUp(c, host, podNames3, svc3IP, servicePort))
+		expectNoError(verifyServeHostnameServiceUp(c, ns, host, podNames2, svc2IP, servicePort))
+		expectNoError(verifyServeHostnameServiceUp(c, ns, host, podNames3, svc3IP, servicePort))
 
 		expectNoError(stopServeHostnameService(c, ns, "service2"))
 		expectNoError(stopServeHostnameService(c, ns, "service3"))
 	})
 
-	It("should work after restarting kube-proxy", func() {
+	It("should work after restarting kube-proxy [Disruptive]", func() {
 		SkipUnlessProviderIs("gce", "gke")
 
 		ns := f.Namespace.Name
@@ -288,15 +286,15 @@ var _ = Describe("Services", func() {
 		}
 		host := hosts[0]
 
-		expectNoError(verifyServeHostnameServiceUp(c, host, podNames1, svc1IP, servicePort))
-		expectNoError(verifyServeHostnameServiceUp(c, host, podNames2, svc2IP, servicePort))
+		expectNoError(verifyServeHostnameServiceUp(c, ns, host, podNames1, svc1IP, servicePort))
+		expectNoError(verifyServeHostnameServiceUp(c, ns, host, podNames2, svc2IP, servicePort))
 
 		By("Restarting kube-proxy")
 		if err := restartKubeProxy(host); err != nil {
 			Failf("error restarting kube-proxy: %v", err)
 		}
-		expectNoError(verifyServeHostnameServiceUp(c, host, podNames1, svc1IP, servicePort))
-		expectNoError(verifyServeHostnameServiceUp(c, host, podNames2, svc2IP, servicePort))
+		expectNoError(verifyServeHostnameServiceUp(c, ns, host, podNames1, svc1IP, servicePort))
+		expectNoError(verifyServeHostnameServiceUp(c, ns, host, podNames2, svc2IP, servicePort))
 
 		By("Removing iptable rules")
 		result, err := SSH(`
@@ -307,11 +305,11 @@ var _ = Describe("Services", func() {
 			LogSSHResult(result)
 			Failf("couldn't remove iptable rules: %v", err)
 		}
-		expectNoError(verifyServeHostnameServiceUp(c, host, podNames1, svc1IP, servicePort))
-		expectNoError(verifyServeHostnameServiceUp(c, host, podNames2, svc2IP, servicePort))
+		expectNoError(verifyServeHostnameServiceUp(c, ns, host, podNames1, svc1IP, servicePort))
+		expectNoError(verifyServeHostnameServiceUp(c, ns, host, podNames2, svc2IP, servicePort))
 	})
 
-	It("should work after restarting apiserver", func() {
+	It("should work after restarting apiserver [Disruptive]", func() {
 		// TODO: restartApiserver doesn't work in GKE - fix it and reenable this test.
 		SkipUnlessProviderIs("gce")
 
@@ -329,7 +327,7 @@ var _ = Describe("Services", func() {
 		}
 		host := hosts[0]
 
-		expectNoError(verifyServeHostnameServiceUp(c, host, podNames1, svc1IP, servicePort))
+		expectNoError(verifyServeHostnameServiceUp(c, ns, host, podNames1, svc1IP, servicePort))
 
 		// Restart apiserver
 		if err := restartApiserver(); err != nil {
@@ -338,7 +336,7 @@ var _ = Describe("Services", func() {
 		if err := waitForApiserverUp(c); err != nil {
 			Failf("error while waiting for apiserver up: %v", err)
 		}
-		expectNoError(verifyServeHostnameServiceUp(c, host, podNames1, svc1IP, servicePort))
+		expectNoError(verifyServeHostnameServiceUp(c, ns, host, podNames1, svc1IP, servicePort))
 
 		// Create a new service and check if it's not reusing IP.
 		defer func() { expectNoError(stopServeHostnameService(c, ns, "service2")) }()
@@ -348,8 +346,8 @@ var _ = Describe("Services", func() {
 		if svc1IP == svc2IP {
 			Failf("VIPs conflict: %v", svc1IP)
 		}
-		expectNoError(verifyServeHostnameServiceUp(c, host, podNames1, svc1IP, servicePort))
-		expectNoError(verifyServeHostnameServiceUp(c, host, podNames2, svc2IP, servicePort))
+		expectNoError(verifyServeHostnameServiceUp(c, ns, host, podNames1, svc1IP, servicePort))
+		expectNoError(verifyServeHostnameServiceUp(c, ns, host, podNames2, svc2IP, servicePort))
 	})
 
 	It("should be able to create a functioning NodePort service", func() {
@@ -396,8 +394,10 @@ var _ = Describe("Services", func() {
 		ip := pickNodeIP(c)
 		testReachable(ip, nodePort)
 
+		By("verifying the node port is locked")
 		hostExec := LaunchHostExecPod(f.Client, f.Namespace.Name, "hostexec")
-		cmd := fmt.Sprintf(`ss -ant46 'sport = :%d' | tail -n +2 | grep LISTEN`, nodePort)
+		// Loop a bit because we see transient flakes.
+		cmd := fmt.Sprintf(`for i in $(seq 1 10); do if ss -ant46 'sport = :%d' | grep ^LISTEN; then exit 0; fi; sleep 0.1; done; exit 1`, nodePort)
 		stdout, err := RunHostCmd(hostExec.Namespace, hostExec.Name, cmd)
 		if err != nil {
 			Failf("expected node port (%d) to be in use, stdout: %v", nodePort, stdout)
@@ -504,29 +504,36 @@ var _ = Describe("Services", func() {
 		By("hitting the pod through the service's LoadBalancer")
 		testLoadBalancerReachable(ingress1, 80)
 
-		By("changing service " + serviceName + " update NodePort")
-		nodePort2 := nodePort1 - 1
-		if !ServiceNodePortRange.Contains(nodePort2) {
-			//Check for (unlikely) assignment at bottom of range
-			nodePort2 = nodePort1 + 1
+		By("changing service " + serviceName + ": update NodePort")
+		nodePort2 := 0
+		for i := 1; i < ServiceNodePortRange.Size; i++ {
+			offs1 := nodePort1 - ServiceNodePortRange.Base
+			offs2 := (offs1 + i) % ServiceNodePortRange.Size
+			nodePort2 = ServiceNodePortRange.Base + offs2
+			service, err = updateService(f.Client, f.Namespace.Name, serviceName, func(s *api.Service) {
+				s.Spec.Ports[0].NodePort = nodePort2
+			})
+			if err != nil && strings.Contains(err.Error(), "provided port is already allocated") {
+				Logf("nodePort %d is busy, will retry", nodePort2)
+				continue
+			}
+			// Otherwise err was nil or err was a real error
+			break
 		}
-		service, err = updateService(f.Client, f.Namespace.Name, serviceName, func(s *api.Service) {
-			s.Spec.Ports[0].NodePort = nodePort2
-		})
 		Expect(err).NotTo(HaveOccurred())
 
 		if service.Spec.Type != api.ServiceTypeLoadBalancer {
-			Failf("got unexpected Spec.Type for updated-NodePort service: %v", service)
+			Failf("got unexpected Spec.Type for updated-LoadBalancer service: %v", service)
 		}
 		if len(service.Spec.Ports) != 1 {
-			Failf("got unexpected len(Spec.Ports) for updated-NodePort service: %v", service)
+			Failf("got unexpected len(Spec.Ports) for updated-LoadBalancer service: %v", service)
 		}
 		port = service.Spec.Ports[0]
 		if port.NodePort != nodePort2 {
-			Failf("got unexpected Spec.Ports[0].nodePort for NodePort service: %v", service)
+			Failf("got unexpected Spec.Ports[0].nodePort for LoadBalancer service: %v", service)
 		}
 		if len(service.Status.LoadBalancer.Ingress) != 1 {
-			Failf("got unexpected len(Status.LoadBalancer.Ingress) for NodePort service: %v", service)
+			Failf("got unexpected len(Status.LoadBalancer.Ingress) for LoadBalancer service: %v", service)
 		}
 
 		By("hitting the pod through the service's updated NodePort")
@@ -541,7 +548,7 @@ var _ = Describe("Services", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			ingress2 := service.Status.LoadBalancer.Ingress[0]
-			if testLoadBalancerReachableInTime(ingress2, 80, 5*time.Second) {
+			if testLoadBalancerReachable(ingress2, 80) {
 				break
 			}
 
@@ -637,7 +644,7 @@ var _ = Describe("Services", func() {
 		if err == nil {
 			Failf("Created service with conflicting NodePort: %v", result2)
 		}
-		expectedErr := fmt.Sprintf("Service \"%s\" is invalid: spec.ports[0].nodePort: invalid value '%d', Details: provided port is already allocated",
+		expectedErr := fmt.Sprintf("Service \"%s\" is invalid: spec.ports[0].nodePort: Invalid value: %d: provided port is already allocated",
 			serviceName2, port.NodePort)
 		Expect(fmt.Sprintf("%v", err)).To(Equal(expectedErr))
 
@@ -698,7 +705,7 @@ var _ = Describe("Services", func() {
 		if err == nil {
 			Failf("failed to prevent update of service with out-of-range NodePort: %v", result)
 		}
-		expectedErr := fmt.Sprintf("Service \"%s\" is invalid: spec.ports[0].nodePort: invalid value '%d', Details: provided port is not in the valid range", serviceName, outOfRangeNodePort)
+		expectedErr := fmt.Sprintf("Service \"%s\" is invalid: spec.ports[0].nodePort: Invalid value: %d: provided port is not in the valid range", serviceName, outOfRangeNodePort)
 		Expect(fmt.Sprintf("%v", err)).To(Equal(expectedErr))
 
 		By("deleting original service " + serviceName)
@@ -771,14 +778,15 @@ var _ = Describe("Services", func() {
 	})
 
 	// This test hits several load-balancer cases because LB turnup is slow.
-	It("should serve identically named services in different namespaces on different load-balancers", func() {
+	// Flaky issue #18952
+	It("should serve identically named services in different namespaces on different load-balancers [Flaky]", func() {
 		// requires ExternalLoadBalancer
 		SkipUnlessProviderIs("gce", "gke", "aws")
 
 		ns1 := f.Namespace.Name
 
 		By("Building a second namespace api object")
-		namespacePtr, err := createTestingNS("services", c)
+		namespacePtr, err := createTestingNS("services", c, nil)
 		Expect(err).NotTo(HaveOccurred())
 		ns2 := namespacePtr.Name
 		extraNamespaces = append(extraNamespaces, ns2)
@@ -1044,7 +1052,7 @@ func validateEndpointsOrFail(c *client.Client, namespace, serviceName string, ex
 		i++
 	}
 
-	if pods, err := c.Pods(api.NamespaceAll).List(labels.Everything(), fields.Everything(), unversioned.ListOptions{}); err == nil {
+	if pods, err := c.Pods(api.NamespaceAll).List(api.ListOptions{}); err == nil {
 		for _, pod := range pods.Items {
 			Logf("Pod %s\t%s\t%s\t%s", pod.Namespace, pod.Name, pod.Spec.NodeName, pod.DeletionTimestamp)
 		}
@@ -1052,6 +1060,39 @@ func validateEndpointsOrFail(c *client.Client, namespace, serviceName string, ex
 		Logf("Can't list pod debug info: %v", err)
 	}
 	Failf("Timed out waiting for service %s in namespace %s to expose endpoints %v (%v elapsed)", serviceName, namespace, expectedEndpoints, serviceStartTimeout)
+}
+
+// createExecPodOrFail creates a simple busybox pod in a sleep loop used as a
+// vessel for kubectl exec commands.
+func createExecPodOrFail(c *client.Client, ns, name string) {
+	Logf("Creating new exec pod")
+	immediate := int64(0)
+	pod := &api.Pod{
+		ObjectMeta: api.ObjectMeta{
+			Name:      name,
+			Namespace: ns,
+		},
+		Spec: api.PodSpec{
+			TerminationGracePeriodSeconds: &immediate,
+			Containers: []api.Container{
+				{
+					Name:    "exec",
+					Image:   "gcr.io/google_containers/busybox",
+					Command: []string{"sh", "-c", "while true; do sleep 5; done"},
+				},
+			},
+		},
+	}
+	_, err := c.Pods(ns).Create(pod)
+	Expect(err).NotTo(HaveOccurred())
+	err = wait.PollImmediate(poll, 5*time.Minute, func() (bool, error) {
+		retrievedPod, err := c.Pods(pod.Namespace).Get(pod.Name)
+		if err != nil {
+			return false, nil
+		}
+		return retrievedPod.Status.Phase == api.PodRunning, nil
+	})
+	Expect(err).NotTo(HaveOccurred())
 }
 
 func createPodOrFail(c *client.Client, ns, name string, labels map[string]string, containerPorts []api.ContainerPort) {
@@ -1096,10 +1137,7 @@ func collectAddresses(nodes *api.NodeList, addressType api.NodeAddressType) []st
 }
 
 func getNodePublicIps(c *client.Client) ([]string, error) {
-	nodes, err := c.Nodes().List(labels.Everything(), fields.Everything(), unversioned.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
+	nodes := ListSchedulableNodesOrDie(c)
 
 	ips := collectAddresses(nodes, api.NodeExternalIP)
 	if len(ips) == 0 {
@@ -1287,40 +1325,69 @@ func stopServeHostnameService(c *client.Client, ns, name string) error {
 	return nil
 }
 
-func verifyServeHostnameServiceUp(c *client.Client, host string, expectedPods []string, serviceIP string, servicePort int) error {
+// verifyServeHostnameServiceUp wgets the given serviceIP:servicePort from the
+// given host and from within a pod. The host is expected to be an SSH-able node
+// in the cluster. Each pod in the service is expected to echo its name. These
+// names are compared with the given expectedPods list after a sort | uniq.
+func verifyServeHostnameServiceUp(c *client.Client, ns, host string, expectedPods []string, serviceIP string, servicePort int) error {
+	execPodName := "execpod"
+	createExecPodOrFail(c, ns, execPodName)
+	defer func() {
+		deletePodOrFail(c, ns, execPodName)
+	}()
+	// Loop a bunch of times - the proxy is randomized, so we want a good
+	// chance of hitting each backend at least once.
 	command := fmt.Sprintf(
 		"for i in $(seq 1 %d); do wget -q -T 1 -O - http://%s:%d || true; echo; done",
-		3*len(expectedPods), serviceIP, servicePort)
+		50*len(expectedPods), serviceIP, servicePort)
 
-	commands := []string{
+	commands := []func() string{
 		// verify service from node
-		fmt.Sprintf(`set -e; %s | sort -n | uniq`, command),
-		// verify service from container
-		fmt.Sprintf(`set -e;
-			sudo docker pull gcr.io/google_containers/busybox > /dev/null;
-			sudo docker run gcr.io/google_containers/busybox sh -c '%v' | sort -n | uniq`,
-			command),
-	}
-
-	By(fmt.Sprintf("verifying service has %d reachable backends", len(expectedPods)))
-	for _, cmd := range commands {
-		passed := false
-		for start := time.Now(); time.Since(start) < time.Minute; time.Sleep(5) {
+		func() string {
+			cmd := fmt.Sprintf(`set -e; %s`, command)
+			Logf("Executing cmd %v on host %v", cmd, host)
 			result, err := SSH(cmd, host, testContext.Provider)
 			if err != nil || result.Code != 0 {
 				LogSSHResult(result)
 				Logf("error while SSH-ing to node: %v", err)
 			}
-			pods := strings.Split(strings.TrimSpace(result.Stdout), "\n")
-			sort.StringSlice(pods).Sort()
-			if api.Semantic.DeepEqual(pods, expectedPods) {
+			return result.Stdout
+		},
+		// verify service from pod
+		func() string {
+			Logf("Executing cmd %v in pod %v/%v", command, ns, execPodName)
+			// TODO: Use exec-over-http via the netexec pod instead of kubectl exec.
+			output, err := RunHostCmd(ns, execPodName, command)
+			if err != nil {
+				Logf("error while kubectl execing %v in pod %v/%v: %v\nOutput: %v", command, ns, execPodName, err, output)
+			}
+			return output
+		},
+	}
+	sort.StringSlice(expectedPods).Sort()
+	By(fmt.Sprintf("verifying service has %d reachable backends", len(expectedPods)))
+	for _, cmdFunc := range commands {
+		passed := false
+		pods := []string{}
+		// Retry cmdFunc for a while
+		for start := time.Now(); time.Since(start) < time.Minute; time.Sleep(5 * time.Second) {
+			pods = strings.Split(strings.TrimSpace(cmdFunc()), "\n")
+			// Uniq pods before the sort because inserting them into a set
+			// (which is implemented using dicts) can re-order them.
+			uniquePods := sets.String{}
+			for _, name := range pods {
+				uniquePods.Insert(name)
+			}
+			sortedPods := uniquePods.List()
+			sort.StringSlice(sortedPods).Sort()
+			if api.Semantic.DeepEqual(sortedPods, expectedPods) {
 				passed = true
 				break
 			}
-			Logf("Waiting for expected pods for %s: %v, got: %v", serviceIP, expectedPods, pods)
+			Logf("Waiting for expected pods for %s: %v, got: %v", serviceIP, expectedPods, sortedPods)
 		}
 		if !passed {
-			return fmt.Errorf("service verification failed for:\n %s", cmd)
+			return fmt.Errorf("service verification failed for:\n %s, expected to retrieve pods %v, only retrieved %v", serviceIP, expectedPods, pods)
 		}
 	}
 	return nil

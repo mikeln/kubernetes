@@ -17,9 +17,6 @@ limitations under the License.
 // Package app makes it easy to create a kubelet server for various contexts.
 package app
 
-// Note: if you change code in this file, you might need to change code in
-// contrib/mesos/pkg/executor/service/.
-
 import (
 	"crypto/tls"
 	"fmt"
@@ -50,6 +47,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/dockertools"
 	"k8s.io/kubernetes/pkg/kubelet/network"
 	"k8s.io/kubernetes/pkg/kubelet/qos"
+	"k8s.io/kubernetes/pkg/kubelet/server"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
 	"k8s.io/kubernetes/pkg/master/ports"
 	"k8s.io/kubernetes/pkg/util"
@@ -118,6 +116,7 @@ type KubeletServer struct {
 	MaxPods                        int
 	MinimumGCAge                   time.Duration
 	NetworkPluginDir               string
+	VolumePluginDir                string
 	NetworkPluginName              string
 	NodeLabels                     []string
 	NodeLabelsFile                 string
@@ -159,13 +158,14 @@ type KubeletServer struct {
 	// Pull images one at a time.
 	SerializeImagePulls        bool
 	ExperimentalFlannelOverlay bool
+	NodeIP                     net.IP
 }
 
 // bootstrapping interface for kubelet, targets the initialization protocol
 type KubeletBootstrap interface {
 	BirthCry()
 	StartGarbageCollection()
-	ListenAndServe(address net.IP, port uint, tlsOptions *kubelet.TLSOptions, auth kubelet.AuthInterface, enableDebuggingHandlers bool)
+	ListenAndServe(address net.IP, port uint, tlsOptions *server.TLSOptions, auth server.AuthInterface, enableDebuggingHandlers bool)
 	ListenAndServeReadOnly(address net.IP, port uint)
 	Run(<-chan kubetypes.PodUpdate)
 	RunOnce(<-chan kubetypes.PodUpdate) ([]kubelet.RunPodResult, error)
@@ -209,6 +209,7 @@ func NewKubeletServer() *KubeletServer {
 		MaxPods:                     40,
 		MinimumGCAge:                1 * time.Minute,
 		NetworkPluginDir:            "/usr/libexec/kubernetes/kubelet-plugins/net/exec/",
+		VolumePluginDir:             "/usr/libexec/kubernetes/kubelet-plugins/volume/exec/",
 		NetworkPluginName:           "",
 		NodeLabels:                  []string{},
 		NodeLabelsFile:              "",
@@ -276,7 +277,7 @@ func (s *KubeletServer) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&s.ManifestURLHeader, "manifest-url-header", s.ManifestURLHeader, "HTTP header to use when accessing the manifest URL, with the key separated from the value with a ':', as in 'key:value'")
 	fs.BoolVar(&s.EnableServer, "enable-server", s.EnableServer, "Enable the Kubelet's server")
 	fs.IPVar(&s.Address, "address", s.Address, "The IP address for the Kubelet to serve on (set to 0.0.0.0 for all interfaces)")
-	fs.UintVar(&s.Port, "port", s.Port, "The port for the Kubelet to serve on. Note that \"kubectl logs\" will not work if you set this flag.") // see #9325
+	fs.UintVar(&s.Port, "port", s.Port, "The port for the Kubelet to serve on.")
 	fs.UintVar(&s.ReadOnlyPort, "read-only-port", s.ReadOnlyPort, "The read-only port for the Kubelet to serve on with no authentication/authorization (set to 0 to disable)")
 	fs.StringVar(&s.TLSCertFile, "tls-cert-file", s.TLSCertFile, ""+
 		"File containing x509 Certificate for HTTPS.  (CA cert, if any, concatenated after server cert). "+
@@ -323,6 +324,7 @@ func (s *KubeletServer) AddFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&s.LowDiskSpaceThresholdMB, "low-diskspace-threshold-mb", s.LowDiskSpaceThresholdMB, "The absolute free disk space, in MB, to maintain. When disk space falls below this threshold, new pods would be rejected. Default: 256")
 	fs.StringVar(&s.NetworkPluginName, "network-plugin", s.NetworkPluginName, "<Warning: Alpha feature> The name of the network plugin to be invoked for various events in kubelet/pod lifecycle")
 	fs.StringVar(&s.NetworkPluginDir, "network-plugin-dir", s.NetworkPluginDir, "<Warning: Alpha feature> The full path of the directory in which to search for network plugins")
+	fs.StringVar(&s.VolumePluginDir, "volume-plugin-dir", s.VolumePluginDir, "<Warning: Alpha feature> The full path of the directory in which to search for additional third party volume plugins")
 	fs.StringVar(&s.CloudProvider, "cloud-provider", s.CloudProvider, "The provider for cloud services.  Empty string for no provider.")
 	fs.StringVar(&s.CloudConfigFile, "cloud-config", s.CloudConfigFile, "The path to the cloud provider configuration file.  Empty string for no configuration file.")
 	fs.StringVar(&s.ResourceContainer, "resource-container", s.ResourceContainer, "Absolute name of the resource-only container to create and run the Kubelet in (Default: /kubelet).")
@@ -348,6 +350,7 @@ func (s *KubeletServer) AddFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&s.KubeAPIBurst, "kube-api-burst", s.KubeAPIBurst, "Burst to use while talking with kubernetes apiserver")
 	fs.BoolVar(&s.SerializeImagePulls, "serialize-image-pulls", s.SerializeImagePulls, "Pull images one at a time. We recommend *not* changing the default value on nodes that run docker daemon with version < 1.9 or an Aufs storage backend. Issue #10959 has more details. [default=true]")
 	fs.BoolVar(&s.ExperimentalFlannelOverlay, "experimental-flannel-overlay", s.ExperimentalFlannelOverlay, "Experimental support for starting the kubelet with the default overlay network (flannel). Assumes flanneld is already running in client mode. [default=false]")
+	fs.IPVar(&s.NodeIP, "node-ip", s.NodeIP, "IP address of the node. If set, kubelet will use this IP address for the node")
 }
 
 // UnsecuredKubeletConfig returns a KubeletConfig suitable for being run, or an error if the server setup
@@ -484,9 +487,10 @@ func (s *KubeletServer) UnsecuredKubeletConfig() (*KubeletConfig, error) {
 		SystemContainer:                s.SystemContainer,
 		TLSOptions:                     tlsOptions,
 		Writer:                         writer,
-		VolumePlugins:                  ProbeVolumePlugins(),
+		VolumePlugins:                  ProbeVolumePlugins(s.VolumePluginDir),
 
 		ExperimentalFlannelOverlay: s.ExperimentalFlannelOverlay,
+		NodeIP: s.NodeIP,
 	}, nil
 }
 
@@ -575,8 +579,8 @@ func (s *KubeletServer) Run(kcfg *KubeletConfig) error {
 }
 
 // InitializeTLS checks for a configured TLSCertFile and TLSPrivateKeyFile: if unspecified a new self-signed
-// certificate and key file are generated. Returns a configured kubelet.TLSOptions object.
-func (s *KubeletServer) InitializeTLS() (*kubelet.TLSOptions, error) {
+// certificate and key file are generated. Returns a configured server.TLSOptions object.
+func (s *KubeletServer) InitializeTLS() (*server.TLSOptions, error) {
 	if s.TLSCertFile == "" && s.TLSPrivateKeyFile == "" {
 		s.TLSCertFile = path.Join(s.CertDirectory, "kubelet.crt")
 		s.TLSPrivateKeyFile = path.Join(s.CertDirectory, "kubelet.key")
@@ -585,7 +589,7 @@ func (s *KubeletServer) InitializeTLS() (*kubelet.TLSOptions, error) {
 		}
 		glog.V(4).Infof("Using self-signed cert (%s, %s)", s.TLSCertFile, s.TLSPrivateKeyFile)
 	}
-	tlsOptions := &kubelet.TLSOptions{
+	tlsOptions := &server.TLSOptions{
 		Config: &tls.Config{
 			// Change default from SSLv3 to TLSv1.0 (because of POODLE vulnerability).
 			MinVersion: tls.VersionTLS10,
@@ -697,14 +701,14 @@ func SimpleKubelet(client *client.Client,
 	readOnlyPort uint,
 	masterServiceNamespace string,
 	volumePlugins []volume.VolumePlugin,
-	tlsOptions *kubelet.TLSOptions,
+	tlsOptions *server.TLSOptions,
 	cadvisorInterface cadvisor.Interface,
 	configFilePath string,
 	cloud cloudprovider.Interface,
 	osInterface kubecontainer.OSInterface,
 	fileCheckFrequency, httpCheckFrequency, minimumGCAge, nodeStatusUpdateFrequency, syncFrequency time.Duration,
 	maxPods int,
-	containerManager cm.ContainerManager) *KubeletConfig {
+	containerManager cm.ContainerManager, clusterDNS net.IP) *KubeletConfig {
 	imageGCPolicy := kubelet.ImageGCPolicy{
 		HighThresholdPercent: 90,
 		LowThresholdPercent:  80,
@@ -719,6 +723,7 @@ func SimpleKubelet(client *client.Client,
 		CAdvisorInterface:         cadvisorInterface,
 		CgroupRoot:                "",
 		Cloud:                     cloud,
+		ClusterDNS:                clusterDNS,
 		ConfigFile:                configFilePath,
 		ContainerManager:          containerManager,
 		ContainerRuntime:          "docker",
@@ -886,7 +891,7 @@ func makePodSourceConfig(kc *KubeletConfig) *config.PodConfig {
 type KubeletConfig struct {
 	Address                        net.IP
 	AllowPrivileged                bool
-	Auth                           kubelet.AuthInterface
+	Auth                           server.AuthInterface
 	Builder                        KubeletBuilder
 	CAdvisorInterface              cadvisor.Interface
 	CgroupRoot                     string
@@ -957,11 +962,12 @@ type KubeletConfig struct {
 	StreamingConnectionIdleTimeout time.Duration
 	SyncFrequency                  time.Duration
 	SystemContainer                string
-	TLSOptions                     *kubelet.TLSOptions
+	TLSOptions                     *server.TLSOptions
 	Writer                         io.Writer
 	VolumePlugins                  []volume.VolumePlugin
 
 	ExperimentalFlannelOverlay bool
+	NodeIP                     net.IP
 }
 
 func CreateAndInitKubelet(kc *KubeletConfig) (k KubeletBootstrap, pc *config.PodConfig, err error) {
@@ -1045,6 +1051,7 @@ func CreateAndInitKubelet(kc *KubeletConfig) (k KubeletBootstrap, pc *config.Pod
 		kc.SerializeImagePulls,
 		kc.ContainerManager,
 		kc.ExperimentalFlannelOverlay,
+		kc.NodeIP,
 	)
 
 	if err != nil {

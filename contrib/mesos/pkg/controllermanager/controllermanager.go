@@ -25,7 +25,7 @@ import (
 	"strconv"
 	"time"
 
-	"k8s.io/kubernetes/cmd/kube-controller-manager/app"
+	kubecontrollermanager "k8s.io/kubernetes/cmd/kube-controller-manager/app"
 	"k8s.io/kubernetes/contrib/mesos/pkg/node"
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
@@ -33,6 +33,7 @@ import (
 	clientcmdapi "k8s.io/kubernetes/pkg/client/unversioned/clientcmd/api"
 	"k8s.io/kubernetes/pkg/cloudprovider"
 	"k8s.io/kubernetes/pkg/cloudprovider/providers/mesos"
+	"k8s.io/kubernetes/pkg/controller"
 	"k8s.io/kubernetes/pkg/controller/daemon"
 	kendpoint "k8s.io/kubernetes/pkg/controller/endpoint"
 	namespacecontroller "k8s.io/kubernetes/pkg/controller/namespace"
@@ -42,8 +43,9 @@ import (
 	resourcequotacontroller "k8s.io/kubernetes/pkg/controller/resourcequota"
 	routecontroller "k8s.io/kubernetes/pkg/controller/route"
 	servicecontroller "k8s.io/kubernetes/pkg/controller/service"
-	"k8s.io/kubernetes/pkg/controller/serviceaccount"
+	serviceaccountcontroller "k8s.io/kubernetes/pkg/controller/serviceaccount"
 	"k8s.io/kubernetes/pkg/healthz"
+	"k8s.io/kubernetes/pkg/serviceaccount"
 	"k8s.io/kubernetes/pkg/util"
 
 	"k8s.io/kubernetes/contrib/mesos/pkg/profile"
@@ -56,14 +58,14 @@ import (
 
 // CMServer is the main context object for the controller manager.
 type CMServer struct {
-	*app.CMServer
+	*kubecontrollermanager.CMServer
 	UseHostPortEndpoints bool
 }
 
 // NewCMServer creates a new CMServer with a default config.
 func NewCMServer() *CMServer {
 	s := &CMServer{
-		CMServer: app.NewCMServer(),
+		CMServer: kubecontrollermanager.NewCMServer(),
 	}
 	s.CloudProvider = mesos.ProviderName
 	s.UseHostPortEndpoints = true
@@ -160,19 +162,34 @@ func (s *CMServer) Run(_ []string) error {
 		routeController.Run(s.NodeSyncPeriod)
 	}
 
-	resourceQuotaController := resourcequotacontroller.NewResourceQuotaController(kubeClient)
-	resourceQuotaController.Run(s.ResourceQuotaSyncPeriod)
+	go resourcequotacontroller.NewResourceQuotaController(
+		kubeClient, controller.StaticResyncPeriodFunc(s.ResourceQuotaSyncPeriod)).Run(s.ConcurrentResourceQuotaSyncs, util.NeverStop)
 
 	namespaceController := namespacecontroller.NewNamespaceController(kubeClient, &unversioned.APIVersions{}, s.NamespaceSyncPeriod)
 	namespaceController.Run()
 
+	volumePlugins := kubecontrollermanager.ProbeRecyclableVolumePlugins(s.VolumeConfigFlags)
+	provisioner, err := kubecontrollermanager.NewVolumeProvisioner(cloud, s.VolumeConfigFlags)
+	if err != nil {
+		glog.Fatal("A Provisioner could not be created, but one was expected. Provisioning will not work. This functionality is considered an early Alpha version.")
+	}
+
 	pvclaimBinder := persistentvolumecontroller.NewPersistentVolumeClaimBinder(kubeClient, s.PVClaimBinderSyncPeriod)
 	pvclaimBinder.Run()
-	pvRecycler, err := persistentvolumecontroller.NewPersistentVolumeRecycler(kubeClient, s.PVClaimBinderSyncPeriod, app.ProbeRecyclableVolumePlugins(s.VolumeConfigFlags))
+
+	pvRecycler, err := persistentvolumecontroller.NewPersistentVolumeRecycler(kubeClient, s.PVClaimBinderSyncPeriod, kubecontrollermanager.ProbeRecyclableVolumePlugins(s.VolumeConfigFlags), cloud)
 	if err != nil {
 		glog.Fatalf("Failed to start persistent volume recycler: %+v", err)
 	}
 	pvRecycler.Run()
+
+	if provisioner != nil {
+		pvController, err := persistentvolumecontroller.NewPersistentVolumeProvisionerController(persistentvolumecontroller.NewControllerClient(kubeClient), s.PVClaimBinderSyncPeriod, volumePlugins, provisioner, cloud)
+		if err != nil {
+			glog.Fatalf("Failed to start persistent volume provisioner controller: %+v", err)
+		}
+		pvController.Run()
+	}
 
 	var rootCA []byte
 
@@ -193,9 +210,9 @@ func (s *CMServer) Run(_ []string) error {
 		if err != nil {
 			glog.Errorf("Error reading key for service account token controller: %v", err)
 		} else {
-			serviceaccount.NewTokensController(
+			serviceaccountcontroller.NewTokensController(
 				kubeClient,
-				serviceaccount.TokensControllerOptions{
+				serviceaccountcontroller.TokensControllerOptions{
 					TokenGenerator: serviceaccount.JWTTokenGenerator(privateKey),
 					RootCA:         rootCA,
 				},
@@ -203,9 +220,9 @@ func (s *CMServer) Run(_ []string) error {
 		}
 	}
 
-	serviceaccount.NewServiceAccountsController(
+	serviceaccountcontroller.NewServiceAccountsController(
 		kubeClient,
-		serviceaccount.DefaultServiceAccountsControllerOptions(),
+		serviceaccountcontroller.DefaultServiceAccountsControllerOptions(),
 	).Run()
 
 	select {}

@@ -39,19 +39,22 @@ import (
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	apiutil "k8s.io/kubernetes/pkg/api/util"
 	"k8s.io/kubernetes/pkg/api/validation"
+	"k8s.io/kubernetes/pkg/apis/extensions"
 	"k8s.io/kubernetes/pkg/apiserver"
+	"k8s.io/kubernetes/pkg/apiserver/authenticator"
 	"k8s.io/kubernetes/pkg/capabilities"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/cloudprovider"
+	serviceaccountcontroller "k8s.io/kubernetes/pkg/controller/serviceaccount"
+	"k8s.io/kubernetes/pkg/genericapiserver"
 	kubeletclient "k8s.io/kubernetes/pkg/kubelet/client"
 	"k8s.io/kubernetes/pkg/master"
 	"k8s.io/kubernetes/pkg/master/ports"
+	"k8s.io/kubernetes/pkg/serviceaccount"
 	"k8s.io/kubernetes/pkg/storage"
-	"k8s.io/kubernetes/pkg/tools"
+	etcdstorage "k8s.io/kubernetes/pkg/storage/etcd"
 	"k8s.io/kubernetes/pkg/util"
-	forked "k8s.io/kubernetes/third_party/forked/coreos/go-etcd/etcd"
 
-	"github.com/coreos/go-etcd/etcd"
 	"github.com/golang/glog"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -98,7 +101,6 @@ type APIServer struct {
 	AdmissionControl           string
 	AdmissionControlConfigFile string
 	EtcdServerList             []string
-	EtcdConfigFile             string
 	EtcdServersOverrides       []string
 	EtcdPathPrefix             string
 	CorsAllowedOriginList      []string
@@ -107,9 +109,9 @@ type APIServer struct {
 	ServiceNodePortRange       util.PortRange
 	EnableLogsSupport          bool
 	MasterServiceNamespace     string
+	MasterCount                int
 	RuntimeConfig              util.ConfigurationMap
 	KubeletConfig              kubeletclient.KubeletClientConfig
-	ClusterName                string
 	EnableProfiling            bool
 	EnableWatchCache           bool
 	MaxRequestsInFlight        int
@@ -133,10 +135,10 @@ func NewAPIServer() *APIServer {
 		EventTTL:               1 * time.Hour,
 		AuthorizationMode:      "AlwaysAllow",
 		AdmissionControl:       "AlwaysAdmit",
-		EtcdPathPrefix:         master.DefaultEtcdPathPrefix,
+		EtcdPathPrefix:         genericapiserver.DefaultEtcdPathPrefix,
 		EnableLogsSupport:      true,
 		MasterServiceNamespace: api.NamespaceDefault,
-		ClusterName:            "kubernetes",
+		MasterCount:            1,
 		CertDirectory:          "/var/run/kubernetes",
 		StorageVersions:        latest.AllPreferredGroupVersions(),
 
@@ -185,7 +187,7 @@ func (s *APIServer) AddFlags(fs *pflag.FlagSet) {
 	fs.IPVar(&s.InsecureBindAddress, "address", s.InsecureBindAddress, "DEPRECATED: see --insecure-bind-address instead")
 	fs.MarkDeprecated("address", "see --insecure-bind-address instead")
 	fs.IPVar(&s.BindAddress, "bind-address", s.BindAddress, ""+
-		"The IP address on which to serve the --read-only-port and --secure-port ports. The "+
+		"The IP address on which to listen for the --secure-port port. The "+
 		"associated interface(s) must be reachable by the rest of the cluster, and by CLI/web "+
 		"clients. If blank, all interfaces will be used (0.0.0.0).")
 	fs.IPVar(&s.AdvertiseAddress, "advertise-address", s.AdvertiseAddress, ""+
@@ -233,7 +235,6 @@ func (s *APIServer) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&s.AdmissionControl, "admission-control", s.AdmissionControl, "Ordered list of plug-ins to do admission control of resources into cluster. Comma-delimited list of: "+strings.Join(admission.GetPlugins(), ", "))
 	fs.StringVar(&s.AdmissionControlConfigFile, "admission-control-config-file", s.AdmissionControlConfigFile, "File with admission control configuration.")
 	fs.StringSliceVar(&s.EtcdServerList, "etcd-servers", s.EtcdServerList, "List of etcd servers to watch (http://ip:port), comma separated. Mutually exclusive with -etcd-config")
-	fs.StringVar(&s.EtcdConfigFile, "etcd-config", s.EtcdConfigFile, "The config file for the etcd client. Mutually exclusive with -etcd-servers.")
 	fs.StringSliceVar(&s.EtcdServersOverrides, "etcd-servers-overrides", s.EtcdServersOverrides, "Per-resource etcd servers overrides, comma separated. The individual override format: group/resource#servers, where servers are http://ip:port, semicolon separated.")
 	fs.StringVar(&s.EtcdPathPrefix, "etcd-prefix", s.EtcdPathPrefix, "The prefix for all resource paths in etcd.")
 	fs.StringSliceVar(&s.CorsAllowedOriginList, "cors-allowed-origins", s.CorsAllowedOriginList, "List of allowed origins for CORS, comma separated.  An allowed origin can be a regular expression to support subdomain matching.  If this list is empty CORS will not be enabled.")
@@ -245,8 +246,8 @@ func (s *APIServer) AddFlags(fs *pflag.FlagSet) {
 	fs.Var(&s.ServiceNodePortRange, "service-node-ports", "Deprecated: see --service-node-port-range instead.")
 	fs.MarkDeprecated("service-node-ports", "see --service-node-port-range instead.")
 	fs.StringVar(&s.MasterServiceNamespace, "master-service-namespace", s.MasterServiceNamespace, "The namespace from which the kubernetes master services should be injected into pods")
+	fs.IntVar(&s.MasterCount, "apiserver-count", s.MasterCount, "The number of apiservers running in the cluster")
 	fs.Var(&s.RuntimeConfig, "runtime-config", "A set of key=value pairs that describe runtime configuration that may be passed to apiserver. apis/<groupVersion> key can be used to turn on/off specific api versions. apis/<groupVersion>/<resource> can be used to turn on/off specific resources. api/all and api/legacy are special keys to control all and legacy api versions respectively.")
-	fs.StringVar(&s.ClusterName, "cluster-name", s.ClusterName, "The instance prefix for the cluster")
 	fs.BoolVar(&s.EnableProfiling, "profiling", true, "Enable profiling via web interface host:port/debug/pprof/")
 	// TODO: enable cache in integration tests.
 	fs.BoolVar(&s.EnableWatchCache, "watch-cache", true, "Enable watch caching in the apiserver")
@@ -282,32 +283,26 @@ func (s *APIServer) verifyClusterIPFlags() {
 	}
 }
 
-type newEtcdFunc func(string, []string, meta.VersionInterfacesFunc, string, string) (storage.Interface, error)
+type newEtcdFunc func([]string, meta.VersionInterfacesFunc, string, string) (storage.Interface, error)
 
-func newEtcd(etcdConfigFile string, etcdServerList []string, interfacesFunc meta.VersionInterfacesFunc, storageVersion, pathPrefix string) (etcdStorage storage.Interface, err error) {
-	if storageVersion == "" {
+func newEtcd(etcdServerList []string, interfacesFunc meta.VersionInterfacesFunc, storageGroupVersionString, pathPrefix string) (etcdStorage storage.Interface, err error) {
+	if storageGroupVersionString == "" {
 		return etcdStorage, fmt.Errorf("storageVersion is required to create a etcd storage")
 	}
-	var client tools.EtcdClient
-	if etcdConfigFile != "" {
-		client, err = etcd.NewClientFromFile(etcdConfigFile)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		etcdClient := etcd.NewClient(etcdServerList)
-		transport := &http.Transport{
-			Dial: forked.Dial,
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-			},
-			MaxIdleConnsPerHost: 500,
-		}
-		etcdClient.SetTransport(transport)
-		client = etcdClient
+	storageVersion, err := unversioned.ParseGroupVersion(storageGroupVersionString)
+	if err != nil {
+		return nil, err
 	}
-	etcdStorage, err = master.NewEtcdStorage(client, interfacesFunc, storageVersion, pathPrefix)
-	return etcdStorage, err
+
+	var storageConfig etcdstorage.EtcdConfig
+	storageConfig.ServerList = etcdServerList
+	storageConfig.Prefix = pathPrefix
+	versionedInterface, err := interfacesFunc(storageVersion)
+	if err != nil {
+		return nil, err
+	}
+	storageConfig.Codec = versionedInterface.Codec
+	return storageConfig.NewStorage()
 }
 
 // convert to a map between group and groupVersions.
@@ -326,7 +321,7 @@ func generateStorageVersionMap(legacyVersion string, storageVersions string) map
 }
 
 // parse the value of --etcd-servers-overrides and update given storageDestinations.
-func updateEtcdOverrides(overrides []string, storageVersions map[string]string, prefix string, storageDestinations *master.StorageDestinations, newEtcdFn newEtcdFunc) {
+func updateEtcdOverrides(overrides []string, storageVersions map[string]string, prefix string, storageDestinations *genericapiserver.StorageDestinations, newEtcdFn newEtcdFunc) {
 	if len(overrides) == 0 {
 		return
 	}
@@ -355,7 +350,7 @@ func updateEtcdOverrides(overrides []string, storageVersions map[string]string, 
 		}
 
 		servers := strings.Split(tokens[1], ";")
-		etcdOverrideStorage, err := newEtcdFn("", servers, apigroup.InterfacesFor, storageVersions[apigroup.GroupVersion.Group], prefix)
+		etcdOverrideStorage, err := newEtcdFn(servers, apigroup.InterfacesFor, storageVersions[apigroup.GroupVersion.Group], prefix)
 		if err != nil {
 			glog.Fatalf("Invalid storage version or misconfigured etcd for %s: %v", tokens[0], err)
 		}
@@ -381,8 +376,8 @@ func (s *APIServer) Run(_ []string) error {
 	}
 	glog.Infof("Will report %v as public IP address.", s.AdvertiseAddress)
 
-	if (s.EtcdConfigFile != "" && len(s.EtcdServerList) != 0) || (s.EtcdConfigFile == "" && len(s.EtcdServerList) == 0) {
-		glog.Fatalf("Specify either --etcd-servers or --etcd-config")
+	if len(s.EtcdServerList) == 0 {
+		glog.Fatalf("--etcd-servers must be specified")
 	}
 
 	if s.KubernetesServiceNodePort > 0 && !s.ServiceNodePortRange.Contains(s.KubernetesServiceNodePort) {
@@ -455,36 +450,36 @@ func (s *APIServer) Run(_ []string) error {
 		glog.Fatalf("Invalid server address: %v", err)
 	}
 
-	legacyV1Group, err := latest.Group("")
+	legacyV1Group, err := latest.Group(api.GroupName)
 	if err != nil {
 		return err
 	}
 
-	storageDestinations := master.NewStorageDestinations()
+	storageDestinations := genericapiserver.NewStorageDestinations()
 
 	storageVersions := generateStorageVersionMap(s.DeprecatedStorageVersion, s.StorageVersions)
 	if _, found := storageVersions[legacyV1Group.GroupVersion.Group]; !found {
 		glog.Fatalf("Couldn't find the storage version for group: %q in storageVersions: %v", legacyV1Group.GroupVersion.Group, storageVersions)
 	}
-	etcdStorage, err := newEtcd(s.EtcdConfigFile, s.EtcdServerList, legacyV1Group.InterfacesFor, storageVersions[legacyV1Group.GroupVersion.Group], s.EtcdPathPrefix)
+	etcdStorage, err := newEtcd(s.EtcdServerList, legacyV1Group.InterfacesFor, storageVersions[legacyV1Group.GroupVersion.Group], s.EtcdPathPrefix)
 	if err != nil {
 		glog.Fatalf("Invalid storage version or misconfigured etcd: %v", err)
 	}
 	storageDestinations.AddAPIGroup("", etcdStorage)
 
 	if !apiGroupVersionOverrides["extensions/v1beta1"].Disable {
-		expGroup, err := latest.Group("extensions")
+		expGroup, err := latest.Group(extensions.GroupName)
 		if err != nil {
 			glog.Fatalf("Extensions API is enabled in runtime config, but not enabled in the environment variable KUBE_API_VERSIONS. Error: %v", err)
 		}
 		if _, found := storageVersions[expGroup.GroupVersion.Group]; !found {
 			glog.Fatalf("Couldn't find the storage version for group: %q in storageVersions: %v", expGroup.GroupVersion.Group, storageVersions)
 		}
-		expEtcdStorage, err := newEtcd(s.EtcdConfigFile, s.EtcdServerList, expGroup.InterfacesFor, storageVersions[expGroup.GroupVersion.Group], s.EtcdPathPrefix)
+		expEtcdStorage, err := newEtcd(s.EtcdServerList, expGroup.InterfacesFor, storageVersions[expGroup.GroupVersion.Group], s.EtcdPathPrefix)
 		if err != nil {
 			glog.Fatalf("Invalid extensions storage version or misconfigured etcd: %v", err)
 		}
-		storageDestinations.AddAPIGroup("extensions", expEtcdStorage)
+		storageDestinations.AddAPIGroup(extensions.GroupName, expEtcdStorage)
 	}
 
 	updateEtcdOverrides(s.EtcdServersOverrides, storageVersions, s.EtcdPathPrefix, &storageDestinations, newEtcd)
@@ -493,24 +488,32 @@ func (s *APIServer) Run(_ []string) error {
 
 	// Default to the private server key for service account token signing
 	if s.ServiceAccountKeyFile == "" && s.TLSPrivateKeyFile != "" {
-		if apiserver.IsValidServiceAccountKeyFile(s.TLSPrivateKeyFile) {
+		if authenticator.IsValidServiceAccountKeyFile(s.TLSPrivateKeyFile) {
 			s.ServiceAccountKeyFile = s.TLSPrivateKeyFile
 		} else {
 			glog.Warning("No RSA key provided, service account token authentication disabled")
 		}
 	}
-	authenticator, err := apiserver.NewAuthenticator(apiserver.AuthenticatorConfig{
-		BasicAuthFile:         s.BasicAuthFile,
-		ClientCAFile:          s.ClientCAFile,
-		TokenAuthFile:         s.TokenAuthFile,
-		OIDCIssuerURL:         s.OIDCIssuerURL,
-		OIDCClientID:          s.OIDCClientID,
-		OIDCCAFile:            s.OIDCCAFile,
-		OIDCUsernameClaim:     s.OIDCUsernameClaim,
-		ServiceAccountKeyFile: s.ServiceAccountKeyFile,
-		ServiceAccountLookup:  s.ServiceAccountLookup,
-		Storage:               etcdStorage,
-		KeystoneURL:           s.KeystoneURL,
+
+	var serviceAccountGetter serviceaccount.ServiceAccountTokenGetter
+	if s.ServiceAccountLookup {
+		// If we need to look up service accounts and tokens,
+		// go directly to etcd to avoid recursive auth insanity
+		serviceAccountGetter = serviceaccountcontroller.NewGetterFromStorageInterface(etcdStorage)
+	}
+
+	authenticator, err := authenticator.New(authenticator.AuthenticatorConfig{
+		BasicAuthFile:             s.BasicAuthFile,
+		ClientCAFile:              s.ClientCAFile,
+		TokenAuthFile:             s.TokenAuthFile,
+		OIDCIssuerURL:             s.OIDCIssuerURL,
+		OIDCClientID:              s.OIDCClientID,
+		OIDCCAFile:                s.OIDCCAFile,
+		OIDCUsernameClaim:         s.OIDCUsernameClaim,
+		ServiceAccountKeyFile:     s.ServiceAccountKeyFile,
+		ServiceAccountLookup:      s.ServiceAccountLookup,
+		ServiceAccountTokenGetter: serviceAccountGetter,
+		KeystoneURL:               s.KeystoneURL,
 	})
 
 	if err != nil {
@@ -551,37 +554,40 @@ func (s *APIServer) Run(_ []string) error {
 	}
 
 	config := &master.Config{
-		StorageDestinations:       storageDestinations,
-		StorageVersions:           storageVersions,
-		EventTTL:                  s.EventTTL,
-		KubeletClient:             kubeletClient,
-		ServiceClusterIPRange:     &n,
-		EnableCoreControllers:     true,
-		EnableLogsSupport:         s.EnableLogsSupport,
-		EnableUISupport:           true,
-		EnableSwaggerSupport:      true,
-		EnableProfiling:           s.EnableProfiling,
-		EnableWatchCache:          s.EnableWatchCache,
-		EnableIndex:               true,
-		APIPrefix:                 s.APIPrefix,
-		APIGroupPrefix:            s.APIGroupPrefix,
-		CorsAllowedOriginList:     s.CorsAllowedOriginList,
-		ReadWritePort:             s.SecurePort,
-		PublicAddress:             s.AdvertiseAddress,
-		Authenticator:             authenticator,
-		SupportsBasicAuth:         len(s.BasicAuthFile) > 0,
-		Authorizer:                authorizer,
-		AdmissionControl:          admissionController,
-		APIGroupVersionOverrides:  apiGroupVersionOverrides,
-		MasterServiceNamespace:    s.MasterServiceNamespace,
-		ClusterName:               s.ClusterName,
-		ExternalHost:              s.ExternalHost,
-		MinRequestTimeout:         s.MinRequestTimeout,
-		ProxyDialer:               proxyDialerFn,
-		ProxyTLSClientConfig:      proxyTLSClientConfig,
-		Tunneler:                  tunneler,
-		ServiceNodePortRange:      s.ServiceNodePortRange,
-		KubernetesServiceNodePort: s.KubernetesServiceNodePort,
+		Config: &genericapiserver.Config{
+			StorageDestinations:       storageDestinations,
+			StorageVersions:           storageVersions,
+			ServiceClusterIPRange:     &n,
+			EnableLogsSupport:         s.EnableLogsSupport,
+			EnableUISupport:           true,
+			EnableSwaggerSupport:      true,
+			EnableProfiling:           s.EnableProfiling,
+			EnableWatchCache:          s.EnableWatchCache,
+			EnableIndex:               true,
+			APIPrefix:                 s.APIPrefix,
+			APIGroupPrefix:            s.APIGroupPrefix,
+			CorsAllowedOriginList:     s.CorsAllowedOriginList,
+			ReadWritePort:             s.SecurePort,
+			PublicAddress:             s.AdvertiseAddress,
+			Authenticator:             authenticator,
+			SupportsBasicAuth:         len(s.BasicAuthFile) > 0,
+			Authorizer:                authorizer,
+			AdmissionControl:          admissionController,
+			APIGroupVersionOverrides:  apiGroupVersionOverrides,
+			MasterServiceNamespace:    s.MasterServiceNamespace,
+			MasterCount:               s.MasterCount,
+			ExternalHost:              s.ExternalHost,
+			MinRequestTimeout:         s.MinRequestTimeout,
+			ProxyDialer:               proxyDialerFn,
+			ProxyTLSClientConfig:      proxyTLSClientConfig,
+			ServiceNodePortRange:      s.ServiceNodePortRange,
+			KubernetesServiceNodePort: s.KubernetesServiceNodePort,
+		},
+		EnableCoreControllers: true,
+		EventTTL:              s.EventTTL,
+		KubeletClient:         kubeletClient,
+
+		Tunneler: tunneler,
 	}
 	m := master.New(config)
 
@@ -695,7 +701,7 @@ func (s *APIServer) getRuntimeConfigValue(apiKey string, defaultValue bool) bool
 }
 
 // Parses the given runtime-config and formats it into map[string]ApiGroupVersionOverride
-func (s *APIServer) parseRuntimeConfig() (map[string]master.APIGroupVersionOverride, error) {
+func (s *APIServer) parseRuntimeConfig() (map[string]genericapiserver.APIGroupVersionOverride, error) {
 	// "api/all=false" allows users to selectively enable specific api versions.
 	disableAllAPIs := false
 	allAPIFlagValue, ok := s.RuntimeConfig["api/all"]
@@ -716,9 +722,9 @@ func (s *APIServer) parseRuntimeConfig() (map[string]master.APIGroupVersionOverr
 	disableV1 := disableAllAPIs
 	v1GroupVersion := "api/v1"
 	disableV1 = !s.getRuntimeConfigValue(v1GroupVersion, !disableV1)
-	apiGroupVersionOverrides := map[string]master.APIGroupVersionOverride{}
+	apiGroupVersionOverrides := map[string]genericapiserver.APIGroupVersionOverride{}
 	if disableV1 {
-		apiGroupVersionOverrides[v1GroupVersion] = master.APIGroupVersionOverride{
+		apiGroupVersionOverrides[v1GroupVersion] = genericapiserver.APIGroupVersionOverride{
 			Disable: true,
 		}
 	}
@@ -730,7 +736,7 @@ func (s *APIServer) parseRuntimeConfig() (map[string]master.APIGroupVersionOverr
 	// TODO: Make this a loop over all group/versions when there are more of them.
 	disableExtensions = !s.getRuntimeConfigValue(extensionsGroupVersion, !disableExtensions)
 	if disableExtensions {
-		apiGroupVersionOverrides[extensionsGroupVersion] = master.APIGroupVersionOverride{
+		apiGroupVersionOverrides[extensionsGroupVersion] = genericapiserver.APIGroupVersionOverride{
 			Disable: true,
 		}
 	}

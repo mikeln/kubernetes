@@ -514,6 +514,7 @@ func TestGetPodVolumesFromDisk(t *testing.T) {
 
 type stubVolume struct {
 	path string
+	volume.MetricsNil
 }
 
 func (f *stubVolume) GetPath() string {
@@ -559,9 +560,9 @@ func TestMakeVolumeMounts(t *testing.T) {
 	}
 
 	podVolumes := kubecontainer.VolumeMap{
-		"disk":  kubecontainer.VolumeInfo{Builder: &stubVolume{"/mnt/disk"}},
-		"disk4": kubecontainer.VolumeInfo{Builder: &stubVolume{"/mnt/host"}},
-		"disk5": kubecontainer.VolumeInfo{Builder: &stubVolume{"/var/lib/kubelet/podID/volumes/empty/disk5"}},
+		"disk":  kubecontainer.VolumeInfo{Builder: &stubVolume{path: "/mnt/disk"}},
+		"disk4": kubecontainer.VolumeInfo{Builder: &stubVolume{path: "/mnt/host"}},
+		"disk5": kubecontainer.VolumeInfo{Builder: &stubVolume{path: "/var/lib/kubelet/podID/volumes/empty/disk5"}},
 	}
 
 	pod := api.Pod{
@@ -777,13 +778,53 @@ func TestGetContainerInfoWithNoContainers(t *testing.T) {
 	if err == nil {
 		t.Errorf("expected error from cadvisor client, got none")
 	}
-	if err != ErrContainerNotFound {
-		t.Errorf("expected error %v, got %v", ErrContainerNotFound.Error(), err.Error())
+	if err != kubecontainer.ErrContainerNotFound {
+		t.Errorf("expected error %v, got %v", kubecontainer.ErrContainerNotFound.Error(), err.Error())
 	}
 	if stats != nil {
 		t.Errorf("non-nil stats when dockertools returned no containers")
 	}
 	mockCadvisor.AssertExpectations(t)
+}
+
+func TestNodeIPParam(t *testing.T) {
+	testKubelet := newTestKubelet(t)
+	kubelet := testKubelet.kubelet
+	tests := []struct {
+		nodeIP   string
+		success  bool
+		testName string
+	}{
+		{
+			nodeIP:   "",
+			success:  true,
+			testName: "IP not set",
+		},
+		{
+			nodeIP:   "127.0.0.1",
+			success:  false,
+			testName: "loopback address",
+		},
+		{
+			nodeIP:   "FE80::0202:B3FF:FE1E:8329",
+			success:  false,
+			testName: "IPv6 address",
+		},
+		{
+			nodeIP:   "1.2.3.4",
+			success:  false,
+			testName: "IPv4 address that doesn't belong to host",
+		},
+	}
+	for _, test := range tests {
+		kubelet.nodeIP = net.ParseIP(test.nodeIP)
+		err := kubelet.validateNodeIP()
+		if err != nil && test.success {
+			t.Errorf("Test: %s, expected no error but got: %v", test.testName, err)
+		} else if err == nil && !test.success {
+			t.Errorf("Test: %s, expected an error", test.testName)
+		}
+	}
 }
 
 func TestGetContainerInfoWithNoMatchingContainers(t *testing.T) {
@@ -807,8 +848,8 @@ func TestGetContainerInfoWithNoMatchingContainers(t *testing.T) {
 	if err == nil {
 		t.Errorf("Expected error from cadvisor client, got none")
 	}
-	if err != ErrContainerNotFound {
-		t.Errorf("Expected error %v, got %v", ErrContainerNotFound.Error(), err.Error())
+	if err != kubecontainer.ErrContainerNotFound {
+		t.Errorf("Expected error %v, got %v", kubecontainer.ErrContainerNotFound.Error(), err.Error())
 	}
 	if stats != nil {
 		t.Errorf("non-nil stats when dockertools returned no containers")
@@ -1020,8 +1061,8 @@ func TestDNSConfigurationParams(t *testing.T) {
 		}
 	}
 	t.Logf("nameservers %+v", options[1].DNS)
-	if len(options[0].DNS) != len(options[1].DNS)+1 {
-		t.Errorf("expected prepend of cluster nameserver, got %+v", options[0].DNS)
+	if len(options[0].DNS) != 1 {
+		t.Errorf("expected cluster nameserver only, got %+v", options[0].DNS)
 	} else if options[0].DNS[0] != clusterNS {
 		t.Errorf("expected nameserver %s, got %v", clusterNS, options[0].DNS[0])
 	}
@@ -1337,7 +1378,7 @@ func TestMakeEnvironmentVariables(t *testing.T) {
 						Name: "POD_NAME",
 						ValueFrom: &api.EnvVarSource{
 							FieldRef: &api.ObjectFieldSelector{
-								APIVersion: testapi.Default.Version(),
+								APIVersion: testapi.Default.GroupVersion().String(),
 								FieldPath:  "metadata.name",
 							},
 						},
@@ -1346,7 +1387,7 @@ func TestMakeEnvironmentVariables(t *testing.T) {
 						Name: "POD_NAMESPACE",
 						ValueFrom: &api.EnvVarSource{
 							FieldRef: &api.ObjectFieldSelector{
-								APIVersion: testapi.Default.Version(),
+								APIVersion: testapi.Default.GroupVersion().String(),
 								FieldPath:  "metadata.namespace",
 							},
 						},
@@ -1355,7 +1396,7 @@ func TestMakeEnvironmentVariables(t *testing.T) {
 						Name: "POD_IP",
 						ValueFrom: &api.EnvVarSource{
 							FieldRef: &api.ObjectFieldSelector{
-								APIVersion: testapi.Default.Version(),
+								APIVersion: testapi.Default.GroupVersion().String(),
 								FieldPath:  "status.podIP",
 							},
 						},
@@ -1383,7 +1424,7 @@ func TestMakeEnvironmentVariables(t *testing.T) {
 						Name: "POD_NAME",
 						ValueFrom: &api.EnvVarSource{
 							FieldRef: &api.ObjectFieldSelector{
-								APIVersion: testapi.Default.Version(),
+								APIVersion: testapi.Default.GroupVersion().String(),
 								FieldPath:  "metadata.name",
 							},
 						},
@@ -1905,119 +1946,6 @@ func TestPodPhaseWithRestartOnFailure(t *testing.T) {
 	for _, test := range tests {
 		if status := GetPhase(&test.pod.Spec, test.pod.Status.ContainerStatuses); status != test.status {
 			t.Errorf("In test %s, expected %v, got %v", test.test, test.status, status)
-		}
-	}
-}
-
-func getReadyStatus(cName string) api.ContainerStatus {
-	return api.ContainerStatus{
-		Name:  cName,
-		Ready: true,
-	}
-}
-func getNotReadyStatus(cName string) api.ContainerStatus {
-	return api.ContainerStatus{
-		Name:  cName,
-		Ready: false,
-	}
-}
-func getReadyCondition(status api.ConditionStatus, reason, message string) []api.PodCondition {
-	return []api.PodCondition{{
-		Type:    api.PodReady,
-		Status:  status,
-		Reason:  reason,
-		Message: message,
-	}}
-}
-
-func TestGetPodReadyCondition(t *testing.T) {
-	tests := []struct {
-		spec              *api.PodSpec
-		containerStatuses []api.ContainerStatus
-		podPhase          api.PodPhase
-		expected          []api.PodCondition
-	}{
-		{
-			spec:              nil,
-			containerStatuses: nil,
-			podPhase:          api.PodRunning,
-			expected:          getReadyCondition(api.ConditionFalse, "UnknownContainerStatuses", ""),
-		},
-		{
-			spec:              &api.PodSpec{},
-			containerStatuses: []api.ContainerStatus{},
-			podPhase:          api.PodRunning,
-			expected:          getReadyCondition(api.ConditionTrue, "", ""),
-		},
-		{
-			spec: &api.PodSpec{
-				Containers: []api.Container{
-					{Name: "1234"},
-				},
-			},
-			containerStatuses: []api.ContainerStatus{},
-			podPhase:          api.PodRunning,
-			expected:          getReadyCondition(api.ConditionFalse, "ContainersNotReady", "containers with unknown status: [1234]"),
-		},
-		{
-			spec: &api.PodSpec{
-				Containers: []api.Container{
-					{Name: "1234"},
-					{Name: "5678"},
-				},
-			},
-			containerStatuses: []api.ContainerStatus{
-				getReadyStatus("1234"),
-				getReadyStatus("5678"),
-			},
-			podPhase: api.PodRunning,
-			expected: getReadyCondition(api.ConditionTrue, "", ""),
-		},
-		{
-			spec: &api.PodSpec{
-				Containers: []api.Container{
-					{Name: "1234"},
-					{Name: "5678"},
-				},
-			},
-			containerStatuses: []api.ContainerStatus{
-				getReadyStatus("1234"),
-			},
-			podPhase: api.PodRunning,
-			expected: getReadyCondition(api.ConditionFalse, "ContainersNotReady", "containers with unknown status: [5678]"),
-		},
-		{
-			spec: &api.PodSpec{
-				Containers: []api.Container{
-					{Name: "1234"},
-					{Name: "5678"},
-				},
-			},
-			containerStatuses: []api.ContainerStatus{
-				getReadyStatus("1234"),
-				getNotReadyStatus("5678"),
-			},
-			podPhase: api.PodRunning,
-			expected: getReadyCondition(api.ConditionFalse, "ContainersNotReady", "containers with unready status: [5678]"),
-		},
-		{
-			spec: &api.PodSpec{
-				Containers: []api.Container{
-					{Name: "1234"},
-				},
-			},
-			containerStatuses: []api.ContainerStatus{
-				getNotReadyStatus("1234"),
-			},
-			podPhase: api.PodSucceeded,
-			expected: getReadyCondition(api.ConditionFalse, "PodCompleted", ""),
-		},
-	}
-
-	for i, test := range tests {
-		condition := getPodReadyCondition(test.spec, test.containerStatuses, test.podPhase)
-		if !reflect.DeepEqual(condition, test.expected) {
-			t.Errorf("On test case %v, expected:\n%+v\ngot\n%+v\n", i, test.expected, condition)
 		}
 	}
 }
@@ -2604,7 +2532,7 @@ func TestUpdateNewNodeStatus(t *testing.T) {
 				SystemUUID:              "abc",
 				BootID:                  "1b3",
 				KernelVersion:           "3.16.0-0.bpo.4-amd64",
-				OsImage:                 "Debian GNU/Linux 7 (wheezy)",
+				OSImage:                 "Debian GNU/Linux 7 (wheezy)",
 				ContainerRuntimeVersion: "docker://1.5.0",
 				KubeletVersion:          version.Get().String(),
 				KubeProxyVersion:        version.Get().String(),
@@ -2725,7 +2653,7 @@ func testDockerRuntimeVersion(t *testing.T) {
 				SystemUUID:              "abc",
 				BootID:                  "1b3",
 				KernelVersion:           "3.16.0-0.bpo.4-amd64",
-				OsImage:                 "Debian GNU/Linux 7 (wheezy)",
+				OSImage:                 "Debian GNU/Linux 7 (wheezy)",
 				ContainerRuntimeVersion: "docker://1.5.0",
 				KubeletVersion:          version.Get().String(),
 				KubeProxyVersion:        version.Get().String(),
@@ -2895,7 +2823,7 @@ func TestUpdateExistingNodeStatus(t *testing.T) {
 				SystemUUID:              "abc",
 				BootID:                  "1b3",
 				KernelVersion:           "3.16.0-0.bpo.4-amd64",
-				OsImage:                 "Debian GNU/Linux 7 (wheezy)",
+				OSImage:                 "Debian GNU/Linux 7 (wheezy)",
 				ContainerRuntimeVersion: "docker://1.5.0",
 				KubeletVersion:          version.Get().String(),
 				KubeProxyVersion:        version.Get().String(),
@@ -3022,7 +2950,7 @@ func TestUpdateNodeStatusWithoutContainerRuntime(t *testing.T) {
 				SystemUUID:              "abc",
 				BootID:                  "1b3",
 				KernelVersion:           "3.16.0-0.bpo.4-amd64",
-				OsImage:                 "Debian GNU/Linux 7 (wheezy)",
+				OSImage:                 "Debian GNU/Linux 7 (wheezy)",
 				ContainerRuntimeVersion: "docker://1.5.0",
 				KubeletVersion:          version.Get().String(),
 				KubeProxyVersion:        version.Get().String(),
@@ -4014,7 +3942,7 @@ func TestCleanupBandwidthLimits(t *testing.T) {
 					ObjectMeta: api.ObjectMeta{
 						Name: "foo",
 						Annotations: map[string]string{
-							"net.alpha.kubernetes.io/ingress-bandwidth": "10M",
+							"kubernetes.io/ingress-bandwidth": "10M",
 						},
 					},
 				},
@@ -4026,7 +3954,7 @@ func TestCleanupBandwidthLimits(t *testing.T) {
 			},
 			inputCIDRs:       []string{"1.2.3.4/32", "2.3.4.5/32", "5.6.7.8/32"},
 			expectResetCIDRs: []string{"2.3.4.5/32", "5.6.7.8/32"},
-			expectedCalls:    []string{"GetPodStatus"},
+			expectedCalls:    []string{"GetAPIPodStatus"},
 			name:             "pod running",
 		},
 		{
@@ -4039,7 +3967,7 @@ func TestCleanupBandwidthLimits(t *testing.T) {
 					ObjectMeta: api.ObjectMeta{
 						Name: "foo",
 						Annotations: map[string]string{
-							"net.alpha.kubernetes.io/ingress-bandwidth": "10M",
+							"kubernetes.io/ingress-bandwidth": "10M",
 						},
 					},
 				},
@@ -4065,7 +3993,7 @@ func TestCleanupBandwidthLimits(t *testing.T) {
 					ObjectMeta: api.ObjectMeta{
 						Name: "foo",
 						Annotations: map[string]string{
-							"net.alpha.kubernetes.io/ingress-bandwidth": "10M",
+							"kubernetes.io/ingress-bandwidth": "10M",
 						},
 					},
 				},
@@ -4077,7 +4005,7 @@ func TestCleanupBandwidthLimits(t *testing.T) {
 			},
 			inputCIDRs:       []string{"1.2.3.4/32", "2.3.4.5/32", "5.6.7.8/32"},
 			expectResetCIDRs: []string{"1.2.3.4/32", "2.3.4.5/32", "5.6.7.8/32"},
-			expectedCalls:    []string{"GetPodStatus"},
+			expectedCalls:    []string{"GetAPIPodStatus"},
 			name:             "pod not running",
 		},
 		{
@@ -4090,7 +4018,7 @@ func TestCleanupBandwidthLimits(t *testing.T) {
 					ObjectMeta: api.ObjectMeta{
 						Name: "foo",
 						Annotations: map[string]string{
-							"net.alpha.kubernetes.io/ingress-bandwidth": "10M",
+							"kubernetes.io/ingress-bandwidth": "10M",
 						},
 					},
 				},
@@ -4135,7 +4063,7 @@ func TestCleanupBandwidthLimits(t *testing.T) {
 
 		testKube := newTestKubelet(t)
 		testKube.kubelet.shaper = shaper
-		testKube.fakeRuntime.PodStatus = *test.status
+		testKube.fakeRuntime.APIPodStatus = *test.status
 
 		if test.cacheStatus {
 			for _, pod := range test.pods {
@@ -4178,7 +4106,7 @@ func TestExtractBandwidthResources(t *testing.T) {
 			pod: &api.Pod{
 				ObjectMeta: api.ObjectMeta{
 					Annotations: map[string]string{
-						"net.alpha.kubernetes.io/ingress-bandwidth": "10M",
+						"kubernetes.io/ingress-bandwidth": "10M",
 					},
 				},
 			},
@@ -4188,7 +4116,7 @@ func TestExtractBandwidthResources(t *testing.T) {
 			pod: &api.Pod{
 				ObjectMeta: api.ObjectMeta{
 					Annotations: map[string]string{
-						"net.alpha.kubernetes.io/egress-bandwidth": "10M",
+						"kubernetes.io/egress-bandwidth": "10M",
 					},
 				},
 			},
@@ -4198,8 +4126,8 @@ func TestExtractBandwidthResources(t *testing.T) {
 			pod: &api.Pod{
 				ObjectMeta: api.ObjectMeta{
 					Annotations: map[string]string{
-						"net.alpha.kubernetes.io/ingress-bandwidth": "4M",
-						"net.alpha.kubernetes.io/egress-bandwidth":  "20M",
+						"kubernetes.io/ingress-bandwidth": "4M",
+						"kubernetes.io/egress-bandwidth":  "20M",
 					},
 				},
 			},
@@ -4210,7 +4138,7 @@ func TestExtractBandwidthResources(t *testing.T) {
 			pod: &api.Pod{
 				ObjectMeta: api.ObjectMeta{
 					Annotations: map[string]string{
-						"net.alpha.kubernetes.io/ingress-bandwidth": "foo",
+						"kubernetes.io/ingress-bandwidth": "foo",
 					},
 				},
 			},

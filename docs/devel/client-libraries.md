@@ -18,6 +18,7 @@
 If you are using a released version of Kubernetes, you should
 refer to the docs that go with that version.
 
+<!-- TAG RELEASE_LINK, added by the munger automatically -->
 <strong>
 The latest release of this document can be found
 [here](http://releases.k8s.io/release-1.1/docs/devel/client-libraries.md).
@@ -49,6 +50,7 @@ Documentation for other releases can be found at
    * [PHP](https://github.com/maclof/kubernetes-client)
    * [Node.js](https://github.com/tenxcloud/node-kubernetes-client)
    * [Perl](https://metacpan.org/pod/Net::Kubernetes)
+   * [Clojure](https://github.com/yanatan16/clj-kubernetes-api)
 
 
 <!-- BEGIN MUNGE: GENERATED_ANALYTICS -->

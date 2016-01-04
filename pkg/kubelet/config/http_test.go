@@ -67,7 +67,7 @@ func TestExtractInvalidPods(t *testing.T) {
 		{
 			desc: "Invalid volume name",
 			pod: &api.Pod{
-				TypeMeta: unversioned.TypeMeta{APIVersion: testapi.Default.Version()},
+				TypeMeta: unversioned.TypeMeta{APIVersion: testapi.Default.GroupVersion().String()},
 				Spec: api.PodSpec{
 					Volumes: []api.Volume{{Name: "_INVALID_"}},
 				},
@@ -76,7 +76,7 @@ func TestExtractInvalidPods(t *testing.T) {
 		{
 			desc: "Duplicate volume names",
 			pod: &api.Pod{
-				TypeMeta: unversioned.TypeMeta{APIVersion: testapi.Default.Version()},
+				TypeMeta: unversioned.TypeMeta{APIVersion: testapi.Default.GroupVersion().String()},
 				Spec: api.PodSpec{
 					Volumes: []api.Volume{{Name: "repeated"}, {Name: "repeated"}},
 				},
@@ -85,7 +85,7 @@ func TestExtractInvalidPods(t *testing.T) {
 		{
 			desc: "Unspecified container name",
 			pod: &api.Pod{
-				TypeMeta: unversioned.TypeMeta{APIVersion: testapi.Default.Version()},
+				TypeMeta: unversioned.TypeMeta{APIVersion: testapi.Default.GroupVersion().String()},
 				Spec: api.PodSpec{
 					Containers: []api.Container{{Name: ""}},
 				},
@@ -94,7 +94,7 @@ func TestExtractInvalidPods(t *testing.T) {
 		{
 			desc: "Invalid container name",
 			pod: &api.Pod{
-				TypeMeta: unversioned.TypeMeta{APIVersion: testapi.Default.Version()},
+				TypeMeta: unversioned.TypeMeta{APIVersion: testapi.Default.GroupVersion().String()},
 				Spec: api.PodSpec{
 					Containers: []api.Container{{Name: "_INVALID_"}},
 				},
@@ -199,7 +199,7 @@ func TestExtractPodsFromHTTP(t *testing.T) {
 						},
 						Spec: api.PodSpec{
 							NodeName:        hostname,
-							Containers:      []api.Container{{Name: "2", Image: "bar", ImagePullPolicy: ""}},
+							Containers:      []api.Container{{Name: "2", Image: "bar:bartag", ImagePullPolicy: ""}},
 							SecurityContext: &api.PodSecurityContext{},
 						},
 					},
@@ -247,7 +247,7 @@ func TestExtractPodsFromHTTP(t *testing.T) {
 
 						Containers: []api.Container{{
 							Name:  "2",
-							Image: "bar",
+							Image: "bar:bartag",
 							TerminationMessagePath: "/dev/termination-log",
 							ImagePullPolicy:        "IfNotPresent",
 						}},
@@ -294,7 +294,7 @@ func TestExtractPodsFromHTTP(t *testing.T) {
 func TestURLWithHeader(t *testing.T) {
 	pod := &api.Pod{
 		TypeMeta: unversioned.TypeMeta{
-			APIVersion: testapi.Default.Version(),
+			APIVersion: testapi.Default.GroupVersion().String(),
 			Kind:       "Pod",
 		},
 		ObjectMeta: api.ObjectMeta{
