@@ -20,7 +20,6 @@
 set -o errexit
 set -o nounset
 set -o pipefail
-set -o xtrace
 
 # Join all args with |
 #   Example: join_regex_allow_empty a b "c d" e  =>  a|b|c d|e
@@ -255,8 +254,8 @@ if [[ "${KUBERNETES_PROVIDER}" == "aws" ]]; then
     : ${NUM_NODES:="100"}
     : ${GINKGO_TEST_ARGS:="--ginkgo.focus=\[Performance\]"}
   else
-    : ${MASTER_SIZE:="m3.large"}
-    : ${NODE_SIZE:="m3.large"}
+    : ${MASTER_SIZE:="m3.medium"}
+    : ${NODE_SIZE:="m3.medium"}
     : ${NUM_NODES:="3"}
   fi
 fi
@@ -266,19 +265,14 @@ fi
 # When 1.2.0-beta.0 comes out, e.g., this will become "ci/latest-1.2"
 CURRENT_RELEASE_PUBLISHED_VERSION="ci/latest-1.1"
 
-# Specialized to skip when running reboot tests.
-REBOOT_SKIP_TESTS=(
-    "Restart\sshould\srestart\sall\snodes"
-    "\[Example\]"
-    )
-
 # Specialized tests which should be skipped by default for projects.
 GCE_DEFAULT_SKIP_TESTS=(
-    "${REBOOT_SKIP_TESTS[@]}"
+    "\[Example\]" # previously in REBOOT_SKIP_TESTS..., dates back before version control (#10078)
     "\[Skipped\]"
-    "Reboot"
-    "ServiceLoadBalancer"
+    "\[Feature:.+\]"
     )
+
+# PROVIDER SKIPS --------------------------------------
 
 # Tests which cannot be run on GKE, e.g. because they require
 # master ssh access.
@@ -296,7 +290,6 @@ GKE_REQUIRED_SKIP_TESTS=(
 
 # Specialized tests which should be skipped by default for GKE.
 GKE_DEFAULT_SKIP_TESTS=(
-    "Autoscaling\sSuite"
     # Perf test, slow by design
     "resource\susage\stracking"
     "${GKE_REQUIRED_SKIP_TESTS[@]}"
@@ -308,6 +301,7 @@ AWS_REQUIRED_SKIP_TESTS=(
     "GCE\sL7\sLoadBalancer\sController" # GCE L7 loadbalancing
 )
 
+# END PROVIDER SKIPS --------------------------------------
 
 # Tests which kills or restarts components and/or nodes.
 DISRUPTIVE_TESTS=(
@@ -327,10 +321,6 @@ GCE_FLAKY_TESTS=(
 # comments below, and for poorly implemented tests, please quote the
 # issue number tracking speed improvements.
 GCE_SLOW_TESTS=(
-    # Before enabling this loadbalancer test in any other test list you must
-    # make sure the associated project has enough quota. At the time of this
-    # writing a GCE project is allowed 3 backend services by default. This
-    # test requires at least 5.
     "\[Slow\]"
     )
 
@@ -341,21 +331,6 @@ GCE_PARALLEL_SKIP_TESTS=(
     "\[Serial\]"
     "\[Disruptive\]"
 )
-
-# Tests that should not run on soak cluster.
-GCE_SOAK_CONTINUOUS_SKIP_TESTS=(
-    "GCE\sL7\sLoadBalancer\sController" # issue: #17119
-    "Density.*30\spods"
-    "Elasticsearch"
-    "external\sload\sbalancer"
-    "identically\snamed\sservices"
-    "network\spartition"
-    "Services.*Type\sgoes\sfrom"
-    "${DISRUPTIVE_TESTS[@]}"       # avoid component restarts.
-    )
-
-GCE_RELEASE_SKIP_TESTS=(
-    )
 
 # Define environment variables based on the Jenkins project name.
 # NOTE: Not all jobs are defined here. The hack/jenkins/e2e.sh in master and
@@ -414,7 +389,7 @@ case ${JOB_NAME} in
   kubernetes-e2e-gce-autoscaling)
     : ${E2E_CLUSTER_NAME:="jenkins-gce-e2e-autoscaling"}
     : ${E2E_NETWORK:="e2e-autoscaling"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=\[Autoscaling\]"}
+    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=\[Feature:Autoscaling\]"}
     : ${KUBE_GCE_INSTANCE_PREFIX:="e2e-autoscaling"}
     : ${PROJECT:="k8s-jnks-e2e-gce-autoscaling"}
     : ${FAIL_ON_GCP_RESOURCE_LEAK:="true"}
@@ -523,13 +498,35 @@ case ${JOB_NAME} in
     NUM_NODES=${NUM_NODES_PARALLEL}
     ;;
 
-  # Runs only the reboot tests on GCE.
+  # Run the Reboot tests on GCE. (#19681)
   kubernetes-e2e-gce-reboot)
     : ${E2E_CLUSTER_NAME:="jenkins-gce-e2e-reboot"}
     : ${E2E_NETWORK:="e2e-reboot"}
     : ${GINKGO_TEST_ARGS:="--ginkgo.focus=Reboot"}
     : ${KUBE_GCE_INSTANCE_PREFIX:="e2e-reboot"}
     : ${PROJECT:="kubernetes-jenkins"}
+    ;;
+
+  # Run the [Serial], [Disruptive], and [Feature:Restart] tests on GCE.
+  kubernetes-e2e-gce-serial)
+    : ${E2E_CLUSTER_NAME:="jenkins-gce-e2e-serial"}
+    : ${E2E_NETWORK:="jenkins-gce-e2e-serial"}
+    : ${FAIL_ON_GCP_RESOURCE_LEAK:="true"}
+    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=\[Serial\]|\[Disruptive\]|\[Feature:Restart\] \
+                           --ginkgo.skip=\[Flaky\]"}
+    : ${KUBE_GCE_INSTANCE_PREFIX:="e2e-serial"}
+    : ${PROJECT:="kubernetes-jkns-e2e-gce-serial"}
+    ;;
+
+  # Run the [Serial], [Disruptive], and [Feature:Restart] tests on GKE.
+  kubernetes-e2e-gke-serial)
+    : ${E2E_CLUSTER_NAME:="jenkins-gke-e2e-serial"}
+    : ${E2E_NETWORK:="jenkins-gke-e2e-serial"}
+    : ${E2E_SET_CLUSTER_API_VERSION:=y}
+    : ${FAIL_ON_GCP_RESOURCE_LEAK:="true"}
+    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=\[Serial\]|\[Disruptive\]|\[Feature:Restart\] \
+                           --ginkgo.skip=\[Flaky\]"}
+    : ${PROJECT:="jenkins-gke-e2e-serial"}
     ;;
 
   # Runs the performance/scalability tests on GCE. A larger cluster is used.
@@ -539,7 +536,8 @@ case ${JOB_NAME} in
     : ${GINKGO_TEST_ARGS:="--ginkgo.focus=\[Performance\] \
         --gather-resource-usage=true \
         --gather-metrics-at-teardown=true \
-        --gather-logs-sizes=true"}
+        --gather-logs-sizes=true \
+        --output-print-type=json"}
     : ${KUBE_GCE_INSTANCE_PREFIX:="e2e-scalability"}
     : ${PROJECT:="kubernetes-jenkins"}
     # Override GCE defaults.
@@ -617,10 +615,13 @@ case ${JOB_NAME} in
     : ${E2E_UP:="false"}
     # Clear out any orphaned namespaces in case previous run was interrupted.
     : ${E2E_CLEAN_START:="true"}
+    # We should be testing the reliability of a long-running cluster. The
+    # DISRUPTIVE_TESTS kill/restart components or nodes in the cluster,
+    # defeating the purpose of a soak cluster. (#15722)
     : ${GINKGO_TEST_ARGS:="--ginkgo.skip=$(join_regex_allow_empty \
           ${GCE_DEFAULT_SKIP_TESTS[@]:+${GCE_DEFAULT_SKIP_TESTS[@]}} \
           ${GCE_FLAKY_TESTS[@]:+${GCE_FLAKY_TESTS[@]}} \
-          ${GCE_SOAK_CONTINUOUS_SKIP_TESTS[@]:+${GCE_SOAK_CONTINUOUS_SKIP_TESTS[@]}} \
+          ${DISRUPTIVE_TESTS[@]:+${DISRUPTIVE_TESTS[@]}} \
           )"}
     : ${KUBE_GCE_INSTANCE_PREFIX:="gce-soak-weekly"}
     : ${PROJECT:="kubernetes-jenkins"}
@@ -639,18 +640,19 @@ case ${JOB_NAME} in
           )"}
     ;;
 
+  # Run the GCE_PARALLEL_SKIP_TESTS on GKE.
   kubernetes-e2e-gke-ci-reboot)
     : ${E2E_CLUSTER_NAME:="jkns-gke-e2e-ci-reboot"}
     : ${E2E_NETWORK:="e2e-gke-ci-reboot"}
     : ${E2E_SET_CLUSTER_API_VERSION:=y}
     : ${PROJECT:="k8s-jkns-e2e-gke-ci-reboot"}
     : ${FAIL_ON_GCP_RESOURCE_LEAK:="true"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.skip=$(join_regex_allow_empty \
-          "\[Skipped\]" \
-          ${GKE_DEFAULT_SKIP_TESTS[@]:+${GKE_DEFAULT_SKIP_TESTS[@]}} \
-          ${REBOOT_SKIP_TESTS[@]:+${REBOOT_SKIP_TESTS[@]}} \
+    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=$(join_regex_allow_empty \
+          ${GCE_PARALLEL_SKIP_TESTS[@]:+${GCE_PARALLEL_SKIP_TESTS[@]}} \
+          ) --ginkgo.skip=$(join_regex_no_empty \
+          ${GCE_DEFAULT_SKIP_TESTS[@]:+${GCE_DEFAULT_SKIP_TESTS[@]}} \
           ${GCE_FLAKY_TESTS[@]:+${GCE_FLAKY_TESTS[@]}} \
-          ${GCE_SLOW_TESTS[@]:+${GCE_SLOW_TESTS[@]}} \
+          ${GKE_DEFAULT_SKIP_TESTS[@]:+${GKE_DEFAULT_SKIP_TESTS[@]}} \
           )"}
     ;;
 
@@ -691,11 +693,14 @@ case ${JOB_NAME} in
     : ${E2E_CLEAN_START:="true"}
     : ${PROJECT:="kubernetes-jenkins"}
     : ${E2E_OPT:="--check_version_skew=false"}
+    # We should be testing the reliability of a long-running cluster. The
+    # DISRUPTIVE_TESTS kill/restart components or nodes in the cluster,
+    # defeating the purpose of a soak cluster. (#15722)
     : ${GINKGO_TEST_ARGS:="--ginkgo.skip=$(join_regex_allow_empty \
           ${GKE_REQUIRED_SKIP_TESTS[@]:+${GKE_REQUIRED_SKIP_TESTS[@]}} \
           ${GCE_DEFAULT_SKIP_TESTS[@]:+${GCE_DEFAULT_SKIP_TESTS[@]}} \
           ${GCE_FLAKY_TESTS[@]:+${GCE_FLAKY_TESTS[@]}} \
-          ${GCE_SOAK_CONTINUOUS_SKIP_TESTS[@]:+${GCE_SOAK_CONTINUOUS_SKIP_TESTS[@]}} \
+          ${DISRUPTIVE_TESTS[@]:+${DISRUPTIVE_TESTS[@]}} \
           )"}
     ;;
 
@@ -763,115 +768,6 @@ case ${JOB_NAME} in
 
   kubernetes-upgrade-gce-1.1-master-step7-e2e-new)
     configure_upgrade_step 'configured-in-release-1.1' 'ci/latest' 'upgrade-gce-1-1-master' 'k8s-jkns-gce-upgrade'
-    ;;
-
-  # kubernetes-upgrade-gce
-  #
-  # This suite:
-  #
-  # 1. launches a cluster at release/latest,
-  # 2. upgrades the master to ci/latest,
-  # 3. runs release/latest e2es,
-  # 4. upgrades the rest of the cluster,
-  # 5. runs release/latest e2es again, then
-  # 6. runs ci/latest e2es and tears down the cluster.
-
-  kubernetes-upgrade-gce-step1-deploy)
-    : ${E2E_CLUSTER_NAME:="gce-upgrade"}
-    : ${E2E_NETWORK:="gce-upgrade"}
-    : ${JENKINS_PUBLISHED_VERSION:="release/latest"}
-    : ${PROJECT:="k8s-jkns-gce-upgrade"}
-    : ${E2E_UP:="true"}
-    : ${E2E_TEST:="false"}
-    : ${E2E_DOWN:="false"}
-    : ${NUM_NODES:=5}
-    ;;
-
-  kubernetes-upgrade-gce-step2-upgrade-master)
-    : ${E2E_CLUSTER_NAME:="gce-upgrade"}
-    : ${E2E_NETWORK:="gce-upgrade"}
-    : ${E2E_OPT:="--check_version_skew=false"}
-    : ${JENKINS_FORCE_GET_TARS:=y}
-    : ${PROJECT:="k8s-jkns-gce-upgrade"}
-    : ${E2E_UP:="false"}
-    : ${E2E_TEST:="true"}
-    : ${E2E_DOWN:="false"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=Cluster\sUpgrade.*upgrade-master"}
-    : ${NUM_NODES:=5}
-    : ${KUBE_ENABLE_DEPLOYMENTS:=true}
-    : ${KUBE_ENABLE_DAEMONSETS:=true}
-    ;;
-
-  kubernetes-upgrade-gce-step3-e2e-old)
-    : ${E2E_CLUSTER_NAME:="gce-upgrade"}
-    : ${E2E_NETWORK:="gce-upgrade"}
-    : ${E2E_OPT:="--check_version_skew=false"}
-    : ${JENKINS_FORCE_GET_TARS:=y}
-    : ${JENKINS_USE_RELEASE_TARS:=y}
-    : ${JENKINS_FORCE_GET_TARS:=y}
-    # Run release/latest e2es
-    : ${JENKINS_PUBLISHED_VERSION:="release/latest"}
-    : ${PROJECT:="k8s-jkns-gce-upgrade"}
-    : ${E2E_UP:="false"}
-    : ${E2E_TEST:="true"}
-    : ${E2E_DOWN:="false"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.skip=$(join_regex_allow_empty \
-          ${GCE_DEFAULT_SKIP_TESTS[@]:+${GCE_DEFAULT_SKIP_TESTS[@]}} \
-          ${GCE_FLAKY_TESTS[@]:+${GCE_FLAKY_TESTS[@]}} \
-          )"}
-    : ${NUM_NODES:=5}
-    ;;
-
-  kubernetes-upgrade-gce-step4-upgrade-cluster)
-    : ${E2E_CLUSTER_NAME:="gce-upgrade"}
-    : ${E2E_NETWORK:="gce-upgrade"}
-    : ${E2E_OPT:="--check_version_skew=false"}
-    : ${JENKINS_FORCE_GET_TARS:=y}
-    : ${PROJECT:="k8s-jkns-gce-upgrade"}
-    : ${E2E_UP:="false"}
-    : ${E2E_TEST:="true"}
-    : ${E2E_DOWN:="false"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=Cluster\sUpgrade.*upgrade-cluster"}
-    : ${NUM_NODES:=5}
-    : ${KUBE_ENABLE_DEPLOYMENTS:=true}
-    : ${KUBE_ENABLE_DAEMONSETS:=true}
-    ;;
-
-  kubernetes-upgrade-gce-step5-e2e-old)
-    : ${E2E_CLUSTER_NAME:="gce-upgrade"}
-    : ${E2E_NETWORK:="gce-upgrade"}
-    : ${E2E_OPT:="--check_version_skew=false"}
-    : ${JENKINS_FORCE_GET_TARS:=y}
-    # Run release/latest e2es
-    : ${JENKINS_PUBLISHED_VERSION:="release/latest"}
-    : ${PROJECT:="k8s-jkns-gce-upgrade"}
-    : ${E2E_UP:="false"}
-    : ${E2E_TEST:="true"}
-    : ${E2E_DOWN:="false"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.skip=$(join_regex_allow_empty \
-          ${GCE_DEFAULT_SKIP_TESTS[@]:+${GCE_DEFAULT_SKIP_TESTS[@]}} \
-          ${GCE_FLAKY_TESTS[@]:+${GCE_FLAKY_TESTS[@]}} \
-          )"}
-    : ${NUM_NODES:=5}
-    ;;
-
-  kubernetes-upgrade-gce-step6-e2e-new)
-    : ${E2E_CLUSTER_NAME:="gce-upgrade"}
-    : ${E2E_NETWORK:="gce-upgrade"}
-    # TODO(15011): these really shouldn't be (very) version skewed, but because
-    # we have to get ci/latest again, it could get slightly out of whack.
-    : ${E2E_OPT:="--check_version_skew=false"}
-    : ${JENKINS_FORCE_GET_TARS:=y}
-    : ${PROJECT:="k8s-jkns-gce-upgrade"}
-    : ${E2E_UP:="false"}
-    : ${E2E_TEST:="true"}
-    : ${E2E_DOWN:="true"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.skip=$(join_regex_allow_empty \
-          ${GCE_DEFAULT_SKIP_TESTS[@]:+${GCE_DEFAULT_SKIP_TESTS[@]}} \
-          ${GCE_FLAKY_TESTS[@]:+${GCE_FLAKY_TESTS[@]}} \
-          ${GCE_SLOW_TESTS[@]:+${GCE_SLOW_TESTS[@]}} \
-          )"}
-    : ${NUM_NODES:=5}
     ;;
 
   # kubernetes-upgrade-gce-1.0-current-release
@@ -1007,6 +903,7 @@ case ${JOB_NAME} in
     NUM_NODES="10"
     MASTER_SIZE="n1-standard-2"
     NODE_SIZE="n1-standard-1"
+    E2E_ZONE="asia-east1-a"
     KUBEMARK_MASTER_SIZE="n1-standard-4"
     KUBEMARK_NUM_NODES="100"
     ;;
@@ -1054,6 +951,9 @@ case ${JOB_NAME} in
     ;;
 esac
 
+# Skip gcloud update checking
+export CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK=true
+
 # AWS variables
 export KUBE_AWS_INSTANCE_PREFIX=${E2E_CLUSTER_NAME}
 export KUBE_AWS_ZONE=${E2E_ZONE}
@@ -1072,6 +972,7 @@ export KUBE_GCE_NODE_PROJECT=${KUBE_GCE_NODE_PROJECT:-}
 export KUBE_GCE_NODE_IMAGE=${KUBE_GCE_NODE_IMAGE:-}
 export KUBE_OS_DISTRIBUTION=${KUBE_OS_DISTRIBUTION:-}
 export GCE_SERVICE_ACCOUNT=$(gcloud auth list 2> /dev/null | grep active | cut -f3 -d' ')
+export FAIL_ON_GCP_RESOURCE_LEAK="${FAIL_ON_GCP_RESOURCE_LEAK:-false}"
 
 # GKE variables
 export CLUSTER_NAME=${E2E_CLUSTER_NAME}
@@ -1080,6 +981,7 @@ export KUBE_GKE_NETWORK=${E2E_NETWORK}
 export E2E_SET_CLUSTER_API_VERSION=${E2E_SET_CLUSTER_API_VERSION:-}
 export CMD_GROUP=${CMD_GROUP:-}
 export MACHINE_TYPE=${NODE_SIZE:-}  # GKE scripts use MACHINE_TYPE for the node vm size
+export CLOUDSDK_BUCKET="${CLOUDSDK_BUCKET:-}"
 
 if [[ ! -z "${GKE_API_ENDPOINT:-}" ]]; then
   export CLOUDSDK_API_ENDPOINT_OVERRIDES_CONTAINER=${GKE_API_ENDPOINT}
@@ -1110,14 +1012,21 @@ export PATH=${PATH}:/usr/local/go/bin
 export KUBE_SKIP_UPDATE=y
 export KUBE_SKIP_CONFIRMATIONS=y
 
+# Kubemark
+export USE_KUBEMARK="${USE_KUBEMARK:-false}"
+export KUBEMARK_MASTER_SIZE="${KUBEMARK_MASTER_SIZE:-$MASTER_SIZE}"
+export KUBEMARK_NUM_NODES="${KUBEMARK_NUM_NODES:-$NUM_NODES}"
+
 # E2E Control Variables
 export E2E_OPT="${E2E_OPT:-}"
 export E2E_UP="${E2E_UP:-true}"
 export E2E_TEST="${E2E_TEST:-true}"
 export E2E_DOWN="${E2E_DOWN:-true}"
 export E2E_CLEAN_START="${E2E_CLEAN_START:-}"
+export E2E_PUBLISH_GREEN_VERSION="${E2E_PUBLISH_GREEN_VERSION:-false}"
 # Used by hack/ginkgo-e2e.sh to enable ginkgo's parallel test runner.
 export GINKGO_PARALLEL=${GINKGO_PARALLEL:-}
+export GINKGO_PARALLEL_NODES=${GINKGO_PARALLEL_NODES:-}
 export GINKGO_TEST_ARGS="${GINKGO_TEST_ARGS:-}"
 
 # If we are on PR Jenkins merging into master, use the local e2e.sh. Otherwise, use the latest on github.

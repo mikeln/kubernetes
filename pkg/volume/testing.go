@@ -32,6 +32,7 @@ import (
 	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/pkg/util/io"
 	"k8s.io/kubernetes/pkg/util/mount"
+	utilstrings "k8s.io/kubernetes/pkg/util/strings"
 )
 
 // fakeVolumeHost is useful for testing volume plugins.
@@ -119,9 +120,10 @@ func ProbeVolumePlugins(config VolumeConfig) []VolumePlugin {
 // Use as:
 //   volume.RegisterPlugin(&FakePlugin{"fake-name"})
 type FakeVolumePlugin struct {
-	PluginName string
-	Host       VolumeHost
-	Config     VolumeConfig
+	PluginName             string
+	Host                   VolumeHost
+	Config                 VolumeConfig
+	LastProvisionerOptions VolumeOptions
 }
 
 var _ VolumePlugin = &FakeVolumePlugin{}
@@ -160,6 +162,7 @@ func (plugin *FakeVolumePlugin) NewDeleter(spec *Spec) (Deleter, error) {
 }
 
 func (plugin *FakeVolumePlugin) NewProvisioner(options VolumeOptions) (Provisioner, error) {
+	plugin.LastProvisionerOptions = options
 	return &FakeProvisioner{options, plugin.Host}, nil
 }
 
@@ -192,7 +195,7 @@ func (fv *FakeVolume) SetUpAt(dir string) error {
 }
 
 func (fv *FakeVolume) GetPath() string {
-	return path.Join(fv.Plugin.Host.GetPodVolumeDir(fv.PodUID, util.EscapeQualifiedNameForDisk(fv.Plugin.PluginName), fv.VolName))
+	return path.Join(fv.Plugin.Host.GetPodVolumeDir(fv.PodUID, utilstrings.EscapeQualifiedNameForDisk(fv.Plugin.PluginName), fv.VolName))
 }
 
 func (fv *FakeVolume) TearDown() error {

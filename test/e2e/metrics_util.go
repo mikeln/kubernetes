@@ -29,6 +29,7 @@ import (
 	"k8s.io/kubernetes/pkg/api"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/master/ports"
+	"k8s.io/kubernetes/pkg/metrics"
 	"k8s.io/kubernetes/pkg/util/sets"
 
 	"github.com/prometheus/common/expfmt"
@@ -46,7 +47,50 @@ const (
 	apiCallLatencyLargeThreshold  time.Duration = 1 * time.Second
 )
 
-var InterestingApiServerMetrics = sets.NewString(
+type MetricsForE2E metrics.MetricsCollection
+
+func (m *MetricsForE2E) filterMetrics() {
+	interestingApiServerMetrics := make(metrics.ApiServerMetrics)
+	for _, metric := range InterestingApiServerMetrics {
+		interestingApiServerMetrics[metric] = (*m).ApiServerMetrics[metric]
+	}
+	interestingKubeletMetrics := make(map[string]metrics.KubeletMetrics)
+	for kubelet, grabbed := range (*m).KubeletMetrics {
+		interestingKubeletMetrics[kubelet] = make(metrics.KubeletMetrics)
+		for _, metric := range InterestingKubeletMetrics {
+			interestingKubeletMetrics[kubelet][metric] = grabbed[metric]
+		}
+	}
+	(*m).ApiServerMetrics = interestingApiServerMetrics
+	(*m).KubeletMetrics = interestingKubeletMetrics
+}
+
+func (m *MetricsForE2E) PrintHumanReadable() string {
+	buf := bytes.Buffer{}
+	for _, interestingMetric := range InterestingApiServerMetrics {
+		buf.WriteString(fmt.Sprintf("For %v:\n", interestingMetric))
+		for _, sample := range (*m).ApiServerMetrics[interestingMetric] {
+			buf.WriteString(fmt.Sprintf("\t%v\n", metrics.PrintSample(sample)))
+		}
+	}
+	for kubelet, grabbed := range (*m).KubeletMetrics {
+		buf.WriteString(fmt.Sprintf("For %v:\n", kubelet))
+		for _, interestingMetric := range InterestingKubeletMetrics {
+			buf.WriteString(fmt.Sprintf("\tFor %v:\n", interestingMetric))
+			for _, sample := range grabbed[interestingMetric] {
+				buf.WriteString(fmt.Sprintf("\t\t%v\n", metrics.PrintSample(sample)))
+			}
+		}
+	}
+	return buf.String()
+}
+
+func (m *MetricsForE2E) PrintJSON() string {
+	m.filterMetrics()
+	return prettyPrintJSON(*m)
+}
+
+var InterestingApiServerMetrics = []string{
 	"apiserver_request_count",
 	"apiserver_request_latencies_bucket",
 	"etcd_helper_cache_entry_count",
@@ -62,15 +106,9 @@ var InterestingApiServerMetrics = sets.NewString(
 	"process_resident_memory_bytes",
 	"process_start_time_seconds",
 	"process_virtual_memory_bytes",
-)
+}
 
-var InterestingKubeletMetrics = sets.NewString(
-	"container_cpu_system_seconds_total",
-	"container_cpu_user_seconds_total",
-	"container_fs_io_time_weighted_seconds_total",
-	"container_memory_usage_bytes",
-	"container_spec_cpu_shares",
-	"container_start_time_seconds",
+var InterestingKubeletMetrics = []string{
 	"go_gc_duration_seconds",
 	"go_goroutines",
 	"kubelet_container_manager_latency_microseconds",
@@ -86,7 +124,7 @@ var InterestingKubeletMetrics = sets.NewString(
 	"process_resident_memory_bytes",
 	"process_start_time_seconds",
 	"process_virtual_memory_bytes",
-)
+}
 
 // Dashboard metrics
 type LatencyMetric struct {
@@ -375,10 +413,12 @@ func VerifySchedulerLatency(c *client.Client) error {
 func prettyPrintJSON(metrics interface{}) string {
 	output := &bytes.Buffer{}
 	if err := json.NewEncoder(output).Encode(metrics); err != nil {
+		Logf("Error building encoder: %v", err)
 		return ""
 	}
 	formatted := &bytes.Buffer{}
 	if err := json.Indent(formatted, output.Bytes(), "", "  "); err != nil {
+		Logf("Error indenting: %v", err)
 		return ""
 	}
 	return string(formatted.Bytes())

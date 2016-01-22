@@ -35,9 +35,9 @@ import (
 
 	"k8s.io/kubernetes/pkg/api"
 	apierrs "k8s.io/kubernetes/pkg/api/errors"
-	"k8s.io/kubernetes/pkg/api/latest"
 	"k8s.io/kubernetes/pkg/api/resource"
 	"k8s.io/kubernetes/pkg/api/unversioned"
+	"k8s.io/kubernetes/pkg/apimachinery/registered"
 	"k8s.io/kubernetes/pkg/apis/extensions"
 	"k8s.io/kubernetes/pkg/client/cache"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
@@ -525,6 +525,10 @@ func waitForPodCondition(c *client.Client, ns, podName, desc string, timeout tim
 	for start := time.Now(); time.Since(start) < timeout; time.Sleep(poll) {
 		pod, err := c.Pods(ns).Get(podName)
 		if err != nil {
+			if apierrs.IsNotFound(err) {
+				Logf("Pod %q in namespace %q disappeared. Error: %v", podName, ns, err)
+				return err
+			}
 			// Aligning this text makes it much more readable
 			Logf("Get pod %[1]s in namespace '%[2]s' failed, ignoring for %[3]v. Error: %[4]v",
 				podName, ns, poll, err)
@@ -972,7 +976,7 @@ func (r podResponseChecker) checkAllResponses() (done bool, err error) {
 // version.
 //
 // TODO(18726): This should be incorporated into client.VersionInterface.
-func serverVersionGTE(v semver.Version, c client.VersionInterface) (bool, error) {
+func serverVersionGTE(v semver.Version, c client.ServerVersionInterface) (bool, error) {
 	serverVersion, err := c.ServerVersion()
 	if err != nil {
 		return false, fmt.Errorf("Unable to get server version: %v", err)
@@ -1189,12 +1193,18 @@ func kubectlCmd(args ...string) *exec.Cmd {
 // kubectlBuilder is used to build, custimize and execute a kubectl Command.
 // Add more functions to customize the builder as needed.
 type kubectlBuilder struct {
-	cmd *exec.Cmd
+	cmd     *exec.Cmd
+	timeout <-chan time.Time
 }
 
 func newKubectlCommand(args ...string) *kubectlBuilder {
 	b := new(kubectlBuilder)
 	b.cmd = kubectlCmd(args...)
+	return b
+}
+
+func (b *kubectlBuilder) withTimeout(t <-chan time.Time) *kubectlBuilder {
+	b.timeout = t
 	return b
 }
 
@@ -1220,8 +1230,21 @@ func (b kubectlBuilder) exec() (string, error) {
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 
 	Logf("Running '%s %s'", cmd.Path, strings.Join(cmd.Args[1:], " ")) // skip arg[0] as it is printed separately
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("Error running %v:\nCommand stdout:\n%v\nstderr:\n%v\n", cmd, cmd.Stdout, cmd.Stderr)
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("Error starting %v:\nCommand stdout:\n%v\nstderr:\n%v\nerror:\n%v\n", cmd, cmd.Stdout, cmd.Stderr, err)
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Wait()
+	}()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			return "", fmt.Errorf("Error running %v:\nCommand stdout:\n%v\nstderr:\n%v\nerror:\n%v\n", cmd, cmd.Stdout, cmd.Stderr, err)
+		}
+	case <-b.timeout:
+		b.cmd.Process.Kill()
+		return "", fmt.Errorf("Timed out waiting for command %v:\nCommand stdout:\n%v\nstderr:\n%v\n", cmd, cmd.Stdout, cmd.Stderr)
 	}
 	Logf("stdout: %q", stdout.String())
 	Logf("stderr: %q", stderr.String())
@@ -1939,9 +1962,11 @@ func waitForDeploymentStatus(c *client.Client, ns, deploymentName string, desire
 			return false, err
 		}
 		if totalCreated > maxCreated {
+			logRCsOfDeployment(deploymentName, oldRCs, newRC)
 			return false, fmt.Errorf("total pods created: %d, more than the max allowed: %d", totalCreated, maxCreated)
 		}
 		if totalAvailable < minAvailable {
+			logRCsOfDeployment(deploymentName, oldRCs, newRC)
 			return false, fmt.Errorf("total pods available: %d, less than the min required: %d", totalAvailable, minAvailable)
 		}
 
@@ -1949,15 +1974,24 @@ func waitForDeploymentStatus(c *client.Client, ns, deploymentName string, desire
 			deployment.Status.UpdatedReplicas == desiredUpdatedReplicas {
 			// Verify RCs.
 			if deploymentutil.GetReplicaCountForRCs(oldRCs) != 0 {
+				logRCsOfDeployment(deploymentName, oldRCs, newRC)
 				return false, fmt.Errorf("old RCs are not fully scaled down")
 			}
 			if deploymentutil.GetReplicaCountForRCs([]*api.ReplicationController{newRC}) != desiredUpdatedReplicas {
-				return false, fmt.Errorf("new RCs is not fully scaled up")
+				logRCsOfDeployment(deploymentName, oldRCs, newRC)
+				return false, fmt.Errorf("new RC is not fully scaled up")
 			}
 			return true, nil
 		}
 		return false, nil
 	})
+}
+
+func logRCsOfDeployment(deploymentName string, oldRCs []*api.ReplicationController, newRC *api.ReplicationController) {
+	for i := range oldRCs {
+		Logf("Old RCs (%d/%d) of deployment %s: %+v", i+1, len(oldRCs), deploymentName, oldRCs[i])
+	}
+	Logf("New RC of deployment %s: %+v", deploymentName, newRC)
 }
 
 // Waits for the number of events on the given object to reach a desired count.
@@ -1976,6 +2010,21 @@ func waitForEvents(c *client.Client, ns string, objOrRef runtime.Object, desired
 		}
 		// Number of events has exceeded the desired count.
 		return false, fmt.Errorf("number of events has exceeded the desired count, eventsCount: %d, desiredCount: %d", eventsCount, desiredEventsCount)
+	})
+}
+
+// Waits for the number of events on the given object to be at least a desired count.
+func waitForPartialEvents(c *client.Client, ns string, objOrRef runtime.Object, atLeastEventsCount int) error {
+	return wait.Poll(poll, 5*time.Minute, func() (bool, error) {
+		events, err := c.Events(ns).Search(objOrRef)
+		if err != nil {
+			return false, fmt.Errorf("error in listing events: %s", err)
+		}
+		eventsCount := len(events.Items)
+		if eventsCount >= atLeastEventsCount {
+			return true, nil
+		}
+		return false, nil
 	})
 }
 
@@ -2152,7 +2201,7 @@ func NewHostExecPodSpec(ns, name string) *api.Pod {
 	pod := &api.Pod{
 		TypeMeta: unversioned.TypeMeta{
 			Kind:       "Pod",
-			APIVersion: latest.GroupOrDie(api.GroupName).GroupVersion.String(),
+			APIVersion: registered.GroupOrDie(api.GroupName).GroupVersion.String(),
 		},
 		ObjectMeta: api.ObjectMeta{
 			Name:      name,

@@ -21,11 +21,16 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/rest"
+	"k8s.io/kubernetes/pkg/apimachinery/registered"
+	"k8s.io/kubernetes/pkg/apis/extensions"
 	"k8s.io/kubernetes/pkg/apiserver"
 	etcdtesting "k8s.io/kubernetes/pkg/storage/etcd/testing"
-	"k8s.io/kubernetes/pkg/util"
+	utilnet "k8s.io/kubernetes/pkg/util/net"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -57,8 +62,8 @@ func TestNew(t *testing.T) {
 	assert.Equal(s.enableUISupport, config.EnableUISupport)
 	assert.Equal(s.enableSwaggerSupport, config.EnableSwaggerSupport)
 	assert.Equal(s.enableProfiling, config.EnableProfiling)
-	assert.Equal(s.ApiPrefix, config.APIPrefix)
-	assert.Equal(s.ApiGroupPrefix, config.APIGroupPrefix)
+	assert.Equal(s.APIPrefix, config.APIPrefix)
+	assert.Equal(s.APIGroupPrefix, config.APIGroupPrefix)
 	assert.Equal(s.corsAllowedOriginList, config.CorsAllowedOriginList)
 	assert.Equal(s.authenticator, config.Authenticator)
 	assert.Equal(s.authorizer, config.Authorizer)
@@ -72,12 +77,61 @@ func TestNew(t *testing.T) {
 	assert.Equal(s.ServiceReadWriteIP, config.ServiceReadWriteIP)
 
 	// These functions should point to the same memory location
-	serverDialer, _ := util.Dialer(s.ProxyTransport)
+	serverDialer, _ := utilnet.Dialer(s.ProxyTransport)
 	serverDialerFunc := fmt.Sprintf("%p", serverDialer)
 	configDialerFunc := fmt.Sprintf("%p", config.ProxyDialer)
 	assert.Equal(serverDialerFunc, configDialerFunc)
 
 	assert.Equal(s.ProxyTransport.(*http.Transport).TLSClientConfig, config.ProxyTLSClientConfig)
+}
+
+// Verifies that AddGroupVersions works as expected.
+func TestInstallAPIGroups(t *testing.T) {
+	_, etcdserver, config, assert := setUp(t)
+	defer etcdserver.Terminate(t)
+
+	config.ProxyDialer = func(network, addr string) (net.Conn, error) { return nil, nil }
+	config.ProxyTLSClientConfig = &tls.Config{}
+	config.APIPrefix = "/apiPrefix"
+	config.APIGroupPrefix = "/apiGroupPrefix"
+
+	s := New(&config)
+	apiGroupMeta := registered.GroupOrDie(api.GroupName)
+	extensionsGroupMeta := registered.GroupOrDie(extensions.GroupName)
+	apiGroupsInfo := []APIGroupInfo{
+		{
+			// legacy group version
+			GroupMeta:                    *apiGroupMeta,
+			VersionedResourcesStorageMap: map[string]map[string]rest.Storage{},
+			IsLegacyGroup:                true,
+		},
+		{
+			// extensions group version
+			GroupMeta:                    *extensionsGroupMeta,
+			VersionedResourcesStorageMap: map[string]map[string]rest.Storage{},
+			OptionsExternalVersion:       &apiGroupMeta.GroupVersion,
+		},
+	}
+	s.InstallAPIGroups(apiGroupsInfo)
+
+	// TODO: Close() this server when fix #19254
+	server := httptest.NewServer(s.HandlerContainer.ServeMux)
+	validPaths := []string{
+		// "/api"
+		config.APIPrefix,
+		// "/api/v1"
+		config.APIPrefix + "/" + apiGroupMeta.GroupVersion.Version,
+		// "/apis/extensions"
+		config.APIGroupPrefix + "/" + extensionsGroupMeta.GroupVersion.Group,
+		// "/apis/extensions/v1beta1"
+		config.APIGroupPrefix + "/" + extensionsGroupMeta.GroupVersion.String(),
+	}
+	for _, path := range validPaths {
+		_, err := http.Get(server.URL + path)
+		if !assert.NoError(err) {
+			t.Errorf("unexpected error: %v, for path: %s", err, path)
+		}
+	}
 }
 
 // TestNewHandlerContainer verifies that NewHandlerContainer uses the

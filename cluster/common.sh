@@ -24,8 +24,8 @@ KUBE_ROOT=$(dirname "${BASH_SOURCE}")/..
 
 DEFAULT_KUBECONFIG="${HOME}/.kube/config"
 
-source "${KUBE_ROOT}/hack/lib/util.sh"
-source "${KUBE_ROOT}/hack/lib/logging.sh"
+source "${KUBE_ROOT}/cluster/lib/util.sh"
+source "${KUBE_ROOT}/cluster/lib/logging.sh"
 # KUBE_RELEASE_VERSION_REGEX matches things like "v1.2.3" or "v1.2.3-alpha.4"
 #
 # NOTE This must match the version_regex in build/common.sh
@@ -170,7 +170,7 @@ function get-kubeconfig-basicauth() {
 #   KUBE_PASSWORD
 function gen-kube-basicauth() {
     KUBE_USER=admin
-    KUBE_PASSWORD=$(python -c 'import string,random; print "".join(random.SystemRandom().choice(string.ascii_letters + string.digits) for _ in range(16))')
+    KUBE_PASSWORD=$(python -c 'import string,random; print("".join(random.SystemRandom().choice(string.ascii_letters + string.digits) for _ in range(16)))')
 }
 
 # Get the bearer token for the current-context in kubeconfig if one exists.

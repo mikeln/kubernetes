@@ -22,8 +22,9 @@ import (
 	watch "k8s.io/kubernetes/pkg/watch"
 )
 
-// JobNamespacer has methods to work with Job resources in a namespace
-type JobNamespacer interface {
+// JobsGetter has a method to return a JobInterface.
+// A group's client should implement this interface.
+type JobsGetter interface {
 	Jobs(namespace string) JobInterface
 }
 
@@ -31,11 +32,13 @@ type JobNamespacer interface {
 type JobInterface interface {
 	Create(*extensions.Job) (*extensions.Job, error)
 	Update(*extensions.Job) (*extensions.Job, error)
+	UpdateStatus(*extensions.Job) (*extensions.Job, error)
 	Delete(name string, options *api.DeleteOptions) error
 	DeleteCollection(options *api.DeleteOptions, listOptions api.ListOptions) error
 	Get(name string) (*extensions.Job, error)
 	List(opts api.ListOptions) (*extensions.JobList, error)
 	Watch(opts api.ListOptions) (watch.Interface, error)
+	JobExpansion
 }
 
 // jobs implements JobInterface
@@ -77,6 +80,12 @@ func (c *jobs) Update(job *extensions.Job) (result *extensions.Job, err error) {
 	return
 }
 
+func (c *jobs) UpdateStatus(job *extensions.Job) (*extensions.Job, error) {
+	result := &extensions.Job{}
+	err := c.client.Put().Resource("jobs").Name(job.Name).SubResource("status").Body(job).Do().Into(result)
+	return result, err
+}
+
 // Delete takes name of the job and deletes it. Returns an error if one occurs.
 func (c *jobs) Delete(name string, options *api.DeleteOptions) error {
 	return c.client.Delete().
@@ -91,7 +100,7 @@ func (c *jobs) Delete(name string, options *api.DeleteOptions) error {
 // DeleteCollection deletes a collection of objects.
 func (c *jobs) DeleteCollection(options *api.DeleteOptions, listOptions api.ListOptions) error {
 	return c.client.Delete().
-		NamespaceIfScoped(c.ns, len(c.ns) > 0).
+		Namespace(c.ns).
 		Resource("jobs").
 		VersionedParams(&listOptions, api.Scheme).
 		Body(options).

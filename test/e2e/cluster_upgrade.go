@@ -162,10 +162,10 @@ var _ = Describe("Cluster Upgrade [Skipped]", func() {
 	})
 
 	f := NewFramework("cluster-upgrade")
-	var w *WebserverTest
+	var w *ServerTest
 	BeforeEach(func() {
 		By("Setting up the service, RC, and pods")
-		w = NewWebserverTest(f.Client, f.Namespace.Name, svcName)
+		w = NewServerTest(f.Client, f.Namespace.Name, svcName)
 		rc := w.CreateWebserverRC(replicas)
 		rcName = rc.ObjectMeta.Name
 		svc := w.BuildServiceSpec()
@@ -326,7 +326,7 @@ func testMasterUpgrade(ip, v string, mUp func(v string) error) {
 }
 
 func checkMasterVersion(c *client.Client, want string) error {
-	v, err := c.ServerVersion()
+	v, err := c.Discovery().ServerVersion()
 	if err != nil {
 		return fmt.Errorf("checkMasterVersion() couldn't get the master version: %v", err)
 	}

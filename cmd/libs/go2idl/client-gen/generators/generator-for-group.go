@@ -34,6 +34,8 @@ type genGroup struct {
 	imports *generator.ImportTracker
 }
 
+var _ generator.Generator = &genGroup{}
+
 // We only want to call GenerateType() once per group.
 func (g *genGroup) Filter(c *generator.Context, t *types.Type) bool {
 	return t == g.types[0]
@@ -52,8 +54,8 @@ func (g *genGroup) Imports(c *generator.Context) (imports []string) {
 func (g *genGroup) GenerateType(c *generator.Context, t *types.Type, w io.Writer) error {
 	sw := generator.NewSnippetWriter(w, c, "$", "$")
 	const pkgUnversioned = "k8s.io/kubernetes/pkg/client/unversioned"
-	const pkgLatest = "k8s.io/kubernetes/pkg/api/latest"
-	prefix := func(group string) string {
+	const pkgRegistered = "k8s.io/kubernetes/pkg/apimachinery/registered"
+	apiPath := func(group string) string {
 		if group == "legacy" {
 			return `"/api"`
 		}
@@ -76,9 +78,9 @@ func (g *genGroup) GenerateType(c *generator.Context, t *types.Type, w io.Writer
 		"DefaultKubernetesUserAgent": c.Universe.Function(types.Name{Package: pkgUnversioned, Name: "DefaultKubernetesUserAgent"}),
 		"RESTClient":                 c.Universe.Type(types.Name{Package: pkgUnversioned, Name: "RESTClient"}),
 		"RESTClientFor":              c.Universe.Function(types.Name{Package: pkgUnversioned, Name: "RESTClientFor"}),
-		"latestGroup":                c.Universe.Variable(types.Name{Package: pkgLatest, Name: "Group"}),
-		"GroupOrDie":                 c.Universe.Variable(types.Name{Package: pkgLatest, Name: "GroupOrDie"}),
-		"prefix":                     prefix(g.group),
+		"latestGroup":                c.Universe.Variable(types.Name{Package: pkgRegistered, Name: "Group"}),
+		"GroupOrDie":                 c.Universe.Variable(types.Name{Package: pkgRegistered, Name: "GroupOrDie"}),
+		"apiPath":                    apiPath(g.group),
 	}
 	sw.Do(groupInterfaceTemplate, m)
 	sw.Do(groupClientTemplate, m)
@@ -87,7 +89,13 @@ func (g *genGroup) GenerateType(c *generator.Context, t *types.Type, w io.Writer
 			"type":  t,
 			"Group": namer.IC(g.group),
 		}
-		sw.Do(namespacerImplTemplate, wrapper)
+		namespaced := !(types.ExtractCommentTags("+", t.SecondClosestCommentLines)["nonNamespaced"] == "true")
+		if namespaced {
+			sw.Do(getterImplNamespaced, wrapper)
+		} else {
+			sw.Do(getterImplNonNamespaced, wrapper)
+
+		}
 	}
 	sw.Do(newClientForConfigTemplate, m)
 	sw.Do(newClientForConfigOrDieTemplate, m)
@@ -99,7 +107,7 @@ func (g *genGroup) GenerateType(c *generator.Context, t *types.Type, w io.Writer
 
 var groupInterfaceTemplate = `
 type $.Group$Interface interface {
-    $range .types$ $.Name.Name$Namespacer
+    $range .types$ $.|publicPlural$Getter
     $end$
 }
 `
@@ -111,9 +119,15 @@ type $.Group$Client struct {
 }
 `
 
-var namespacerImplTemplate = `
-func (c *$.Group$Client) $.type|publicPlural$(namespace string) $.type.Name.Name$Interface {
+var getterImplNamespaced = `
+func (c *$.Group$Client) $.type|publicPlural$(namespace string) $.type|public$Interface {
 	return new$.type|publicPlural$(c, namespace)
+}
+`
+
+var getterImplNonNamespaced = `
+func (c *$.Group$Client) $.type|publicPlural$() $.type|public$Interface {
+	return new$.type|publicPlural$(c)
 }
 `
 
@@ -157,7 +171,7 @@ func setConfigDefaults(config *$.Config|raw$) error {
 	if err != nil {
 		return err
 	}
-	config.Prefix = $.prefix$
+	config.APIPath = $.apiPath$
 	if config.UserAgent == "" {
 		config.UserAgent = $.DefaultKubernetesUserAgent|raw$()
 	}

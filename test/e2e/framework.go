@@ -19,6 +19,7 @@ package e2e
 import (
 	"bytes"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -136,6 +137,32 @@ func (f *Framework) afterEach() {
 		Failf("All nodes should be ready after test, %v", err)
 	}
 
+	summaries := make([]TestDataSummary, 0)
+	if testContext.GatherKubeSystemResourceUsageData {
+		summaries = append(summaries, f.gatherer.stopAndSummarize([]int{90, 99}, f.addonResourceConstraints))
+	}
+
+	if testContext.GatherLogsSizes {
+		close(f.logsSizeCloseChannel)
+		f.logsSizeWaitGroup.Wait()
+		summaries = append(summaries, f.logsSizeVerifier.GetSummary())
+	}
+
+	if testContext.GatherMetricsAfterTest {
+		// TODO: enable Scheduler and ControllerManager metrics grabbing when Master's Kubelet will be registered.
+		grabber, err := metrics.NewMetricsGrabber(f.Client, true, false, false, true)
+		if err != nil {
+			Logf("Failed to create MetricsGrabber. Skipping metrics gathering.")
+		} else {
+			received, err := grabber.Grab(nil)
+			if err != nil {
+				Logf("MetricsGrabber failed grab metrics. Skipping metrics gathering.")
+			} else {
+				summaries = append(summaries, (*MetricsForE2E)(&received))
+			}
+		}
+	}
+
 	if testContext.DeleteNamespace {
 		By(fmt.Sprintf("Destroying namespace %q for this suite.", f.Namespace.Name))
 
@@ -150,17 +177,6 @@ func (f *Framework) afterEach() {
 		Logf("Found DeleteNamespace=false, skipping namespace deletion!")
 	}
 
-	summaries := make([]TestDataSummary, 0)
-	if testContext.GatherKubeSystemResourceUsageData {
-		summaries = append(summaries, f.gatherer.stopAndSummarize([]int{50, 90, 99, 100}, f.addonResourceConstraints))
-	}
-
-	if testContext.GatherLogsSizes {
-		close(f.logsSizeCloseChannel)
-		f.logsSizeWaitGroup.Wait()
-		summaries = append(summaries, f.logsSizeVerifier.GetSummary())
-	}
-
 	outputTypes := strings.Split(testContext.OutputPrintType, ",")
 	for _, printType := range outputTypes {
 		switch printType {
@@ -170,41 +186,12 @@ func (f *Framework) afterEach() {
 			}
 		case "json":
 			for i := range summaries {
-				Logf(summaries[i].PrintJSON())
+				typeName := reflect.TypeOf(summaries[i]).String()
+				Logf("%v JSON\n%v", typeName[strings.LastIndex(typeName, ".")+1:len(typeName)], summaries[i].PrintJSON())
+				Logf("Finished")
 			}
 		default:
 			Logf("Unknown ouptut type: %v. Skipping.", printType)
-		}
-	}
-
-	if testContext.GatherMetricsAfterTest {
-		// TODO: enable Scheduler and ControllerManager metrics grabbing when Master's Kubelet will be registered.
-		grabber, err := metrics.NewMetricsGrabber(f.Client, true, false, false, true)
-		if err != nil {
-			Logf("Failed to create MetricsGrabber. Skipping metrics gathering.")
-		} else {
-			received, err := grabber.Grab(nil)
-			if err != nil {
-				Logf("MetricsGrabber failed grab metrics. Skipping metrics gathering.")
-			} else {
-				buf := bytes.Buffer{}
-				for interestingMetric := range InterestingApiServerMetrics {
-					buf.WriteString(fmt.Sprintf("For %v:\n", interestingMetric))
-					for _, sample := range received.ApiServerMetrics[interestingMetric] {
-						buf.WriteString(fmt.Sprintf("\t%v\n", metrics.PrintSample(sample)))
-					}
-				}
-				for kubelet, grabbed := range received.KubeletMetrics {
-					buf.WriteString(fmt.Sprintf("For %v:\n", kubelet))
-					for interestingMetric := range InterestingKubeletMetrics {
-						buf.WriteString(fmt.Sprintf("\tFor %v:\n", interestingMetric))
-						for _, sample := range grabbed[interestingMetric] {
-							buf.WriteString(fmt.Sprintf("\t\t%v\n", metrics.PrintSample(sample)))
-						}
-					}
-				}
-				Logf("%v", buf.String())
-			}
 		}
 	}
 

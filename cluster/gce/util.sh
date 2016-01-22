@@ -21,6 +21,7 @@
 KUBE_ROOT=$(dirname "${BASH_SOURCE}")/../..
 source "${KUBE_ROOT}/cluster/gce/${KUBE_CONFIG_FILE-"config-default.sh"}"
 source "${KUBE_ROOT}/cluster/common.sh"
+source "${KUBE_ROOT}/cluster/lib/util.sh"
 
 if [[ "${OS_DISTRIBUTION}" == "debian" || "${OS_DISTRIBUTION}" == "coreos" || "${OS_DISTRIBUTION}" == "trusty" ]]; then
   source "${KUBE_ROOT}/cluster/gce/${OS_DISTRIBUTION}/helper.sh"
@@ -301,21 +302,6 @@ function detect-master () {
   echo "Using master: $KUBE_MASTER (external IP: $KUBE_MASTER_IP)"
 }
 
-# Wait for background jobs to finish. Exit with
-# an error status if any of the jobs failed.
-function wait-for-jobs {
-  local fail=0
-  local job
-  for job in $(jobs -p); do
-    wait "${job}" || fail=$((fail + 1))
-  done
-  if (( fail != 0 )); then
-    echo -e "${color_red}${fail} commands failed.  Exiting.${color_norm}" >&2
-    # Ignore failures for now.
-    # exit 2
-  fi
-}
-
 # Robustly try to create a static ip.
 # $1: The name of the ip to create
 # $2: The name of the region to create the ip in.
@@ -589,6 +575,22 @@ function kube-up {
   find-release-tars
   upload-server-tars
 
+  if [[ ${KUBE_USE_EXISTING_MASTER:-} == "true" ]]; then
+    create-nodes
+    create-autoscaler
+  else
+    check-existing
+    create-network
+    create-master
+    create-nodes-firewall
+    create-nodes-template
+    create-nodes
+    create-autoscaler
+    check-cluster
+  fi
+}
+
+function check-existing() {
   local running_in_terminal=false
   # May be false if tty is not allocated (for example with ssh -T).
   if [ -t 1 ]; then
@@ -609,7 +611,9 @@ function kube-up {
       fi
     fi
   fi
+}
 
+function create-network() {
   if ! gcloud compute networks --project "${PROJECT}" describe "${NETWORK}" &>/dev/null; then
     echo "Creating new network: ${NETWORK}"
     # The network needs to be created synchronously or we have a race. The
@@ -632,7 +636,9 @@ function kube-up {
       --source-ranges "0.0.0.0/0" \
       --allow "tcp:22" &
   fi
+}
 
+function create-master() {
   echo "Starting master and configuring firewalls"
   gcloud compute firewall-rules create "${MASTER_NAME}-https" \
     --project "${PROJECT}" \
@@ -677,7 +683,9 @@ function kube-up {
   create-certs "${MASTER_RESERVED_IP}"
 
   create-master-instance "${MASTER_RESERVED_IP}" &
+}
 
+function create-nodes-firewall() {
   # Create a single firewall rule for all minions.
   create-firewall-rule "${NODE_TAG}-all" "${CLUSTER_IP_RANGE}" "${NODE_TAG}" &
 
@@ -687,8 +695,12 @@ function kube-up {
   fi
 
   # Wait for last batch of jobs
-  wait-for-jobs
+  kube::util::wait-for-jobs || {
+    echo -e "${color_red}${fail} commands failed.${color_norm}" >&2
+  }
+}
 
+function create-nodes-template() {
   echo "Creating minions."
 
   # TODO(zmerlynn): Refactor setting scope flags.
@@ -702,8 +714,12 @@ function kube-up {
   write-node-env
 
   local template_name="${NODE_INSTANCE_PREFIX}-template"
-  
+
   create-node-instance-template $template_name
+}
+
+function create-nodes() {
+  local template_name="${NODE_INSTANCE_PREFIX}-template"
 
   local defaulted_max_instances_per_mig=${MAX_INSTANCES_PER_MIG:-500}
 
@@ -743,10 +759,9 @@ function kube-up {
       "${NODE_INSTANCE_PREFIX}-group" \
       --zone "${ZONE}" \
       --project "${PROJECT}" || true;
+}
 
-  detect-node-names
-  detect-master
-
+function create-autoscaler() {
   # Create autoscaler for nodes if requested
   if [[ "${ENABLE_NODE_AUTOSCALER}" == "true" ]]; then
     METRICS=""
@@ -776,6 +791,11 @@ function kube-up {
     gcloud compute instance-groups managed set-autoscaling "${NODE_INSTANCE_PREFIX}-group" --zone "${ZONE}" --project "${PROJECT}" \
       --min-num-replicas "${last_min_instances}" --max-num-replicas "${last_max_instances}" ${METRICS} || true
   fi
+}
+
+function check-cluster() {
+  detect-node-names
+  detect-master
 
   echo "Waiting up to ${KUBE_CLUSTER_INITIALIZATION_TIMEOUT} seconds for cluster initialization."
   echo
@@ -857,7 +877,7 @@ function kube-down {
   fi
 
   # Get the name of the managed instance group template before we delete the
-  # managed instange group. (The name of the managed instnace group template may
+  # managed instance group. (The name of the managed instance group template may
   # change during a cluster upgrade.)
   local template=$(get-template "${PROJECT}" "${ZONE}" "${NODE_INSTANCE_PREFIX}-group")
 
@@ -1192,7 +1212,10 @@ function kube-push {
   for (( i=0; i<${#NODE_NAMES[@]}; i++)); do
     push-node "${NODE_NAMES[$i]}" &
   done
-  wait-for-jobs
+
+  kube::util::wait-for-jobs || {
+    echo -e "${color_red}${fail} commands failed.${color_norm}" >&2
+  }
 
   # TODO(zmerlynn): Re-create instance-template with the new
   # node-kube-env. This isn't important until the node-ip-range issue
@@ -1388,6 +1411,7 @@ OPENCONTRAIL_PUBLIC_SUBNET: $(yaml-quote ${OPENCONTRAIL_PUBLIC_SUBNET:-})
 E2E_STORAGE_TEST_ENVIRONMENT: $(yaml-quote ${E2E_STORAGE_TEST_ENVIRONMENT:-})
 KUBE_IMAGE_TAG: $(yaml-quote ${KUBE_IMAGE_TAG:-})
 KUBE_DOCKER_REGISTRY: $(yaml-quote ${KUBE_DOCKER_REGISTRY:-})
+MULTIZONE: $(yaml-quote ${MULTIZONE:-})
 EOF
   if [ -n "${KUBELET_PORT:-}" ]; then
     cat >>$file <<EOF

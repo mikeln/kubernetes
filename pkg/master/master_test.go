@@ -30,11 +30,11 @@ import (
 	"testing"
 
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/latest"
 	"k8s.io/kubernetes/pkg/api/testapi"
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	apiutil "k8s.io/kubernetes/pkg/api/util"
-	"k8s.io/kubernetes/pkg/api/v1"
+	utilnet "k8s.io/kubernetes/pkg/util/net"
+
 	"k8s.io/kubernetes/pkg/apis/extensions"
 	"k8s.io/kubernetes/pkg/genericapiserver"
 	"k8s.io/kubernetes/pkg/kubelet/client"
@@ -46,7 +46,6 @@ import (
 	etcdstorage "k8s.io/kubernetes/pkg/storage/etcd"
 	"k8s.io/kubernetes/pkg/storage/etcd/etcdtest"
 	etcdtesting "k8s.io/kubernetes/pkg/storage/etcd/testing"
-	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/pkg/util/intstr"
 
 	"github.com/emicklei/go-restful"
@@ -102,8 +101,8 @@ func TestNew(t *testing.T) {
 	// Verify many of the variables match their config counterparts
 	assert.Equal(master.enableCoreControllers, config.EnableCoreControllers)
 	assert.Equal(master.tunneler, config.Tunneler)
-	assert.Equal(master.ApiPrefix, config.APIPrefix)
-	assert.Equal(master.ApiGroupPrefix, config.APIGroupPrefix)
+	assert.Equal(master.APIPrefix, config.APIPrefix)
+	assert.Equal(master.APIGroupPrefix, config.APIGroupPrefix)
 	assert.Equal(master.ApiGroupVersionOverrides, config.APIGroupVersionOverrides)
 	assert.Equal(master.RequestContextMapper, config.RequestContextMapper)
 	assert.Equal(master.MasterCount, config.MasterCount)
@@ -112,7 +111,7 @@ func TestNew(t *testing.T) {
 	assert.Equal(master.ServiceReadWriteIP, config.ServiceReadWriteIP)
 
 	// These functions should point to the same memory location
-	masterDialer, _ := util.Dialer(master.ProxyTransport)
+	masterDialer, _ := utilnet.Dialer(master.ProxyTransport)
 	masterDialerFunc := fmt.Sprintf("%p", masterDialer)
 	configDialerFunc := fmt.Sprintf("%p", config.ProxyDialer)
 	assert.Equal(masterDialerFunc, configDialerFunc)
@@ -160,42 +159,13 @@ func TestFindExternalAddress(t *testing.T) {
 	assert.Error(err, "expected findExternalAddress to fail on a node with missing ip information")
 }
 
-// TestApi_v1 verifies that the unexported api_v1 function does indeed
-// utilize the correct Version and Codec.
-func TestApi_v1(t *testing.T) {
-	_, etcdserver, config, assert := setUp(t)
-	defer etcdserver.Terminate(t)
-
-	//	config.KubeletClient = client.FakeKubeletClient{}
-
-	config.ProxyDialer = func(network, addr string) (net.Conn, error) { return nil, nil }
-	config.ProxyTLSClientConfig = &tls.Config{}
-
-	s := genericapiserver.New(config.Config)
-	master := &Master{
-		GenericAPIServer: s,
-		tunneler:         config.Tunneler,
-	}
-
-	version := master.api_v1(&config)
-	assert.Equal(unversioned.GroupVersion{Version: "v1"}, version.GroupVersion, "Version was not v1: %s", version.GroupVersion)
-	assert.Equal(v1.Codec, version.Codec, "version.Codec was not for v1: %s", version.Codec)
-	// Verify that version storage has all the resources.
-	for k, v := range master.v1ResourcesStorage {
-		k = strings.ToLower(k)
-		val, ok := version.Storage[k]
-		assert.True(ok, "ok: %s", ok)
-		assert.Equal(val, v)
-	}
-}
-
 // TestNewBootstrapController verifies master fields are properly copied into controller
 func TestNewBootstrapController(t *testing.T) {
 	// Tests a subset of inputs to ensure they are set properly in the controller
 	master, etcdserver, _, assert := setUp(t)
 	defer etcdserver.Terminate(t)
 
-	portRange := util.PortRange{Base: 10, Size: 10}
+	portRange := utilnet.PortRange{Base: 10, Size: 10}
 
 	master.namespaceRegistry = namespace.NewRegistry(nil)
 	master.serviceRegistry = registrytest.NewServiceRegistry()
@@ -246,36 +216,6 @@ func TestControllerServicePorts(t *testing.T) {
 
 	assert.Equal(1000, controller.ExtraServicePorts[0].Port)
 	assert.Equal(1010, controller.ExtraServicePorts[1].Port)
-}
-
-// TestDefaultAPIGroupVersion verifies that the unexported defaultAPIGroupVersion
-// creates the expected APIGroupVersion based off of master.
-func TestDefaultAPIGroupVersion(t *testing.T) {
-	master, etcdserver, _, assert := setUp(t)
-	defer etcdserver.Terminate(t)
-
-	apiGroup := master.defaultAPIGroupVersion()
-
-	assert.Equal(apiGroup.Root, master.ApiPrefix)
-	assert.Equal(apiGroup.Admit, master.AdmissionControl)
-	assert.Equal(apiGroup.Context, master.RequestContextMapper)
-	assert.Equal(apiGroup.MinRequestTimeout, master.MinRequestTimeout)
-}
-
-// TestExpapi verifies that the unexported exapi creates
-// the an experimental unversioned.APIGroupVersion.
-func TestExpapi(t *testing.T) {
-	master, etcdserver, config, assert := setUp(t)
-	defer etcdserver.Terminate(t)
-
-	extensionsGroupMeta := latest.GroupOrDie(extensions.GroupName)
-
-	expAPIGroup := master.experimental(&config)
-	assert.Equal(expAPIGroup.Root, master.ApiGroupPrefix)
-	assert.Equal(expAPIGroup.Mapper, extensionsGroupMeta.RESTMapper)
-	assert.Equal(expAPIGroup.Codec, extensionsGroupMeta.Codec)
-	assert.Equal(expAPIGroup.Linker, extensionsGroupMeta.SelfLinker)
-	assert.Equal(expAPIGroup.GroupVersion, extensionsGroupMeta.GroupVersion)
 }
 
 // TestGetNodeAddresses verifies that proper results are returned
@@ -461,7 +401,8 @@ func testInstallThirdPartyAPIListVersion(t *testing.T, version string) {
 	for _, test := range tests {
 		func() {
 			master, etcdserver, server, assert := initThirdParty(t, version)
-			defer server.Close()
+			// TODO: Uncomment when fix #19254
+			// defer server.Close()
 			defer etcdserver.Terminate(t)
 
 			if test.items != nil {
@@ -570,7 +511,8 @@ func TestInstallThirdPartyAPIGet(t *testing.T) {
 
 func testInstallThirdPartyAPIGetVersion(t *testing.T, version string) {
 	master, etcdserver, server, assert := initThirdParty(t, version)
-	defer server.Close()
+	// TODO: Uncomment when fix #19254
+	// defer server.Close()
 	defer etcdserver.Terminate(t)
 
 	expectedObj := Foo{
@@ -617,7 +559,8 @@ func TestInstallThirdPartyAPIPost(t *testing.T) {
 
 func testInstallThirdPartyAPIPostForVersion(t *testing.T, version string) {
 	master, etcdserver, server, assert := initThirdParty(t, version)
-	defer server.Close()
+	// TODO: Uncomment when fix #19254
+	// defer server.Close()
 	defer etcdserver.Terminate(t)
 
 	inputObj := Foo{
@@ -682,7 +625,8 @@ func TestInstallThirdPartyAPIDelete(t *testing.T) {
 
 func testInstallThirdPartyAPIDeleteVersion(t *testing.T, version string) {
 	master, etcdserver, server, assert := initThirdParty(t, version)
-	defer server.Close()
+	// TODO: Uncomment when fix #19254
+	// defer server.Close()
 	defer etcdserver.Terminate(t)
 
 	expectedObj := Foo{
@@ -759,7 +703,8 @@ func TestInstallThirdPartyResourceRemove(t *testing.T) {
 
 func testInstallThirdPartyResourceRemove(t *testing.T, version string) {
 	master, etcdserver, server, assert := initThirdParty(t, version)
-	defer server.Close()
+	// TODO: Uncomment when fix #19254
+	// defer server.Close()
 	defer etcdserver.Terminate(t)
 
 	expectedObj := Foo{

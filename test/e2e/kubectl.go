@@ -70,6 +70,7 @@ const (
 	simplePodName            = "nginx"
 	nginxDefaultOutput       = "Welcome to nginx!"
 	simplePodPort            = 80
+	runJobTimeout            = 5 * time.Minute
 )
 
 var proxyRegexp = regexp.MustCompile("Starting to serve on 127.0.0.1:([0-9]+)")
@@ -203,7 +204,6 @@ var _ = Describe("Kubectl client", func() {
 				Failf("Unable to parse URL %s. Error=%s", apiServer, err)
 			}
 			apiServerUrl.Scheme = "https"
-			apiServerUrl.Path = "/api"
 			if !strings.Contains(apiServer, ":443") {
 				apiServerUrl.Host = apiServerUrl.Host + ":443"
 			}
@@ -352,7 +352,9 @@ var _ = Describe("Kubectl client", func() {
 				}
 				proxyAddr := fmt.Sprintf("http://%s:8080", goproxyPod.Status.PodIP)
 
-				shellCommand := fmt.Sprintf("%s=%s .%s --kubeconfig=%s --server=%s --namespace=%s exec nginx echo running in container", proxyVar, proxyAddr, uploadBinaryName, kubecConfigRemotePath, apiServer, ns)
+				shellCommand := fmt.Sprintf("%s=%s .%s --kubeconfig=%s --server=%s --namespace=%s exec nginx echo running in container",
+					proxyVar, proxyAddr, uploadBinaryName, kubecConfigRemotePath, apiServer, ns)
+				Logf("About to remote exec: %v", shellCommand)
 				// Execute kubectl on remote exec server.
 				var netexecShellOutput []byte
 				if subResourceProxyAvailable {
@@ -383,6 +385,12 @@ var _ = Describe("Kubectl client", func() {
 					Failf("Unable to read the result from the netexec server. Error: %s", err)
 				}
 
+				// Get (and print!) the proxy logs here, so
+				// they'll be present in case the below check
+				// fails the test, to help diagnose #19500 if
+				// it recurs.
+				proxyLog := runKubectlOrDie("log", "goproxy", fmt.Sprintf("--namespace=%v", ns))
+
 				// Verify we got the normal output captured by the exec server
 				expectedExecOutput := "running in container\n"
 				if netexecOuput.Output != expectedExecOutput {
@@ -391,7 +399,6 @@ var _ = Describe("Kubectl client", func() {
 
 				// Verify the proxy server logs saw the connection
 				expectedProxyLog := fmt.Sprintf("Accepting CONNECT to %s", strings.TrimRight(strings.TrimLeft(testContext.Host, "https://"), "/api"))
-				proxyLog := runKubectlOrDie("log", "goproxy", fmt.Sprintf("--namespace=%v", ns))
 
 				if !strings.Contains(proxyLog, expectedProxyLog) {
 					Failf("Missing expected log result on proxy server for %s. Expected: %q, got %q", proxyVar, expectedProxyLog, proxyLog)
@@ -911,8 +918,11 @@ var _ = Describe("Kubectl client", func() {
 
 		It("should create a job from an image, then delete the job [Conformance]", func() {
 			By("executing a command with run --rm and attach with stdin")
+			t := time.NewTimer(runJobTimeout)
+			defer t.Stop()
 			runOutput := newKubectlCommand(nsFlag, "run", jobName, "--image=busybox", "--rm=true", "--restart=Never", "--attach=true", "--stdin", "--", "sh", "-c", "cat && echo 'stdin closed'").
 				withStdinData("abcd1234").
+				withTimeout(t.C).
 				execOrDie()
 			Expect(runOutput).To(ContainSubstring("abcd1234"))
 			Expect(runOutput).To(ContainSubstring("stdin closed"))

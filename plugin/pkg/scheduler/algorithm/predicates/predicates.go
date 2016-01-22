@@ -82,46 +82,35 @@ func (c *CachedNodeInfo) GetNodeInfo(id string) (*api.Node, error) {
 }
 
 func isVolumeConflict(volume api.Volume, pod *api.Pod) bool {
-	if volume.GCEPersistentDisk != nil {
-		disk := volume.GCEPersistentDisk
+	// fast path if there is no conflict checking targets.
+	if volume.GCEPersistentDisk == nil && volume.AWSElasticBlockStore == nil && volume.RBD == nil {
+		return false
+	}
 
-		existingPod := &(pod.Spec)
-		for ix := range existingPod.Volumes {
-			if existingPod.Volumes[ix].GCEPersistentDisk != nil &&
-				existingPod.Volumes[ix].GCEPersistentDisk.PDName == disk.PDName &&
-				!(existingPod.Volumes[ix].GCEPersistentDisk.ReadOnly && disk.ReadOnly) {
+	for _, existingVolume := range pod.Spec.Volumes {
+		// Same GCE disk mounted by multiple pods conflicts unless all pods mount it read-only.
+		if volume.GCEPersistentDisk != nil && existingVolume.GCEPersistentDisk != nil {
+			disk, existingDisk := volume.GCEPersistentDisk, existingVolume.GCEPersistentDisk
+			if disk.PDName == existingDisk.PDName && !(disk.ReadOnly && existingDisk.ReadOnly) {
+				return true
+			}
+		}
+
+		if volume.AWSElasticBlockStore != nil && existingVolume.AWSElasticBlockStore != nil {
+			if volume.AWSElasticBlockStore.VolumeID == existingVolume.AWSElasticBlockStore.VolumeID {
+				return true
+			}
+		}
+
+		if volume.RBD != nil && existingVolume.RBD != nil {
+			mon, pool, image := volume.RBD.CephMonitors, volume.RBD.RBDPool, volume.RBD.RBDImage
+			emon, epool, eimage := existingVolume.RBD.CephMonitors, existingVolume.RBD.RBDPool, existingVolume.RBD.RBDImage
+			if haveSame(mon, emon) && pool == epool && image == eimage {
 				return true
 			}
 		}
 	}
-	if volume.AWSElasticBlockStore != nil {
-		volumeID := volume.AWSElasticBlockStore.VolumeID
 
-		existingPod := &(pod.Spec)
-		for ix := range existingPod.Volumes {
-			if existingPod.Volumes[ix].AWSElasticBlockStore != nil &&
-				existingPod.Volumes[ix].AWSElasticBlockStore.VolumeID == volumeID {
-				return true
-			}
-		}
-	}
-	if volume.RBD != nil {
-		mon := volume.RBD.CephMonitors
-		pool := volume.RBD.RBDPool
-		image := volume.RBD.RBDImage
-
-		existingPod := &(pod.Spec)
-		for ix := range existingPod.Volumes {
-			if existingPod.Volumes[ix].RBD != nil {
-				mon_m := existingPod.Volumes[ix].RBD.CephMonitors
-				pool_m := existingPod.Volumes[ix].RBD.RBDPool
-				image_m := existingPod.Volumes[ix].RBD.RBDImage
-				if haveSame(mon, mon_m) && pool_m == pool && image_m == image {
-					return true
-				}
-			}
-		}
-	}
 	return false
 }
 
@@ -134,10 +123,9 @@ func isVolumeConflict(volume api.Volume, pod *api.Pod) bool {
 // - Ceph RBD forbids if any two pods share at least same monitor, and match pool and image.
 // TODO: migrate this into some per-volume specific code?
 func NoDiskConflict(pod *api.Pod, existingPods []*api.Pod, node string) (bool, error) {
-	podSpec := &(pod.Spec)
-	for ix := range podSpec.Volumes {
-		for podIx := range existingPods {
-			if isVolumeConflict(podSpec.Volumes[ix], existingPods[podIx]) {
+	for _, v := range pod.Spec.Volumes {
+		for _, ev := range existingPods {
+			if isVolumeConflict(v, ev) {
 				return false, nil
 			}
 		}
@@ -256,8 +244,6 @@ type resourceRequest struct {
 	memory   int64
 }
 
-var FailedResourceType string
-
 func getResourceRequest(pod *api.Pod) resourceRequest {
 	result := resourceRequest{}
 	for _, container := range pod.Spec.Containers {
@@ -268,9 +254,9 @@ func getResourceRequest(pod *api.Pod) resourceRequest {
 	return result
 }
 
-func CheckPodsExceedingFreeResources(pods []*api.Pod, capacity api.ResourceList) (fitting []*api.Pod, notFittingCPU, notFittingMemory []*api.Pod) {
-	totalMilliCPU := capacity.Cpu().MilliValue()
-	totalMemory := capacity.Memory().Value()
+func CheckPodsExceedingFreeResources(pods []*api.Pod, allocatable api.ResourceList) (fitting []*api.Pod, notFittingCPU, notFittingMemory []*api.Pod) {
+	totalMilliCPU := allocatable.Cpu().MilliValue()
+	totalMemory := allocatable.Memory().Value()
 	milliCPURequested := int64(0)
 	memoryRequested := int64(0)
 	for _, pod := range pods {
@@ -306,10 +292,10 @@ func (r *ResourceFit) PodFitsResources(pod *api.Pod, existingPods []*api.Pod, no
 		return false, err
 	}
 
-	if int64(len(existingPods))+1 > info.Status.Capacity.Pods().Value() {
-		glog.V(10).Infof("Cannot schedule Pod %+v, because Node %+v is full, running %v out of %v Pods.", podName(pod), node, len(existingPods), info.Status.Capacity.Pods().Value())
-		FailedResourceType = "PodExceedsMaxPodNumber"
-		return false, nil
+	allocatable := info.Status.Allocatable
+	if int64(len(existingPods))+1 > allocatable.Pods().Value() {
+		glog.V(10).Infof("Cannot schedule Pod %+v, because Node %+v is full, running %v out of %v Pods.", podName(pod), node, len(existingPods), allocatable.Pods().Value())
+		return false, ErrExceededMaxPodNumber
 	}
 
 	podRequest := getResourceRequest(pod)
@@ -318,18 +304,16 @@ func (r *ResourceFit) PodFitsResources(pod *api.Pod, existingPods []*api.Pod, no
 	}
 
 	pods := append(existingPods, pod)
-	_, exceedingCPU, exceedingMemory := CheckPodsExceedingFreeResources(pods, info.Status.Capacity)
+	_, exceedingCPU, exceedingMemory := CheckPodsExceedingFreeResources(pods, allocatable)
 	if len(exceedingCPU) > 0 {
 		glog.V(10).Infof("Cannot schedule Pod %+v, because Node %v does not have sufficient CPU", podName(pod), node)
-		FailedResourceType = "PodExceedsFreeCPU"
-		return false, nil
+		return false, ErrInsufficientFreeCPU
 	}
 	if len(exceedingMemory) > 0 {
 		glog.V(10).Infof("Cannot schedule Pod %+v, because Node %v does not have sufficient Memory", podName(pod), node)
-		FailedResourceType = "PodExceedsFreeMemory"
-		return false, nil
+		return false, ErrInsufficientFreeMemory
 	}
-	glog.V(10).Infof("Schedule Pod %+v on Node %+v is allowed, Node is running only %v out of %v Pods.", podName(pod), node, len(pods)-1, info.Status.Capacity.Pods().Value())
+	glog.V(10).Infof("Schedule Pod %+v on Node %+v is allowed, Node is running only %v out of %v Pods.", podName(pod), node, len(pods)-1, allocatable.Pods().Value())
 	return true, nil
 }
 
@@ -513,8 +497,11 @@ func (s *ServiceAffinity) CheckServiceAffinity(pod *api.Pod, existingPods []*api
 }
 
 func PodFitsHostPorts(pod *api.Pod, existingPods []*api.Pod, node string) (bool, error) {
-	existingPorts := getUsedPorts(existingPods...)
 	wantPorts := getUsedPorts(pod)
+	if len(wantPorts) == 0 {
+		return true, nil
+	}
+	existingPorts := getUsedPorts(existingPods...)
 	for wport := range wantPorts {
 		if wport == 0 {
 			continue

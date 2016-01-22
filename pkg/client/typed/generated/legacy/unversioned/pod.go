@@ -21,8 +21,9 @@ import (
 	watch "k8s.io/kubernetes/pkg/watch"
 )
 
-// PodNamespacer has methods to work with Pod resources in a namespace
-type PodNamespacer interface {
+// PodsGetter has a method to return a PodInterface.
+// A group's client should implement this interface.
+type PodsGetter interface {
 	Pods(namespace string) PodInterface
 }
 
@@ -30,11 +31,13 @@ type PodNamespacer interface {
 type PodInterface interface {
 	Create(*api.Pod) (*api.Pod, error)
 	Update(*api.Pod) (*api.Pod, error)
+	UpdateStatus(*api.Pod) (*api.Pod, error)
 	Delete(name string, options *api.DeleteOptions) error
 	DeleteCollection(options *api.DeleteOptions, listOptions api.ListOptions) error
 	Get(name string) (*api.Pod, error)
 	List(opts api.ListOptions) (*api.PodList, error)
 	Watch(opts api.ListOptions) (watch.Interface, error)
+	PodExpansion
 }
 
 // pods implements PodInterface
@@ -76,6 +79,12 @@ func (c *pods) Update(pod *api.Pod) (result *api.Pod, err error) {
 	return
 }
 
+func (c *pods) UpdateStatus(pod *api.Pod) (*api.Pod, error) {
+	result := &api.Pod{}
+	err := c.client.Put().Resource("pods").Name(pod.Name).SubResource("status").Body(pod).Do().Into(result)
+	return result, err
+}
+
 // Delete takes name of the pod and deletes it. Returns an error if one occurs.
 func (c *pods) Delete(name string, options *api.DeleteOptions) error {
 	return c.client.Delete().
@@ -90,7 +99,7 @@ func (c *pods) Delete(name string, options *api.DeleteOptions) error {
 // DeleteCollection deletes a collection of objects.
 func (c *pods) DeleteCollection(options *api.DeleteOptions, listOptions api.ListOptions) error {
 	return c.client.Delete().
-		NamespaceIfScoped(c.ns, len(c.ns) > 0).
+		Namespace(c.ns).
 		Resource("pods").
 		VersionedParams(&listOptions, api.Scheme).
 		Body(options).

@@ -21,8 +21,9 @@ import (
 	watch "k8s.io/kubernetes/pkg/watch"
 )
 
-// EndpointsNamespacer has methods to work with Endpoints resources in a namespace
-type EndpointsNamespacer interface {
+// EndpointsGetter has a method to return a EndpointsInterface.
+// A group's client should implement this interface.
+type EndpointsGetter interface {
 	Endpoints(namespace string) EndpointsInterface
 }
 
@@ -35,6 +36,7 @@ type EndpointsInterface interface {
 	Get(name string) (*api.Endpoints, error)
 	List(opts api.ListOptions) (*api.EndpointsList, error)
 	Watch(opts api.ListOptions) (watch.Interface, error)
+	EndpointsExpansion
 }
 
 // endpoints implements EndpointsInterface
@@ -90,7 +92,7 @@ func (c *endpoints) Delete(name string, options *api.DeleteOptions) error {
 // DeleteCollection deletes a collection of objects.
 func (c *endpoints) DeleteCollection(options *api.DeleteOptions, listOptions api.ListOptions) error {
 	return c.client.Delete().
-		NamespaceIfScoped(c.ns, len(c.ns) > 0).
+		Namespace(c.ns).
 		Resource("endpoints").
 		VersionedParams(&listOptions, api.Scheme).
 		Body(options).

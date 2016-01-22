@@ -53,6 +53,7 @@ import (
 	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/master"
 	"k8s.io/kubernetes/pkg/util"
+	utilnet "k8s.io/kubernetes/pkg/util/net"
 	"k8s.io/kubernetes/pkg/util/sets"
 	"k8s.io/kubernetes/pkg/util/wait"
 	"k8s.io/kubernetes/pkg/volume/empty_dir"
@@ -75,9 +76,9 @@ var (
 	// Limit the number of concurrent tests.
 	maxConcurrency int
 
-	longTestTimeout = time.Second * 300
+	longTestTimeout = time.Second * 500
 
-	maxTestTimeout = time.Minute * 10
+	maxTestTimeout = time.Minute * 15
 )
 
 type delegateHandler struct {
@@ -153,7 +154,7 @@ func startComponents(firstManifestURL, secondManifestURL string) (string, string
 	}
 
 	// The caller of master.New should guarantee pulicAddress is properly set
-	hostIP, err := util.ValidPublicAddrForMaster(publicAddress)
+	hostIP, err := utilnet.ChooseBindAddress(publicAddress)
 	if err != nil {
 		glog.Fatalf("Unable to find suitable network address.error='%v' . "+
 			"Fail to get a valid public address for master.", err)
@@ -171,7 +172,7 @@ func startComponents(firstManifestURL, secondManifestURL string) (string, string
 	handler.delegate = m.Handler
 
 	// Scheduler
-	schedulerConfigFactory := factory.NewConfigFactory(cl, nil, api.DefaultSchedulerName)
+	schedulerConfigFactory := factory.NewConfigFactory(cl, api.DefaultSchedulerName)
 	schedulerConfig, err := schedulerConfigFactory.Create()
 	if err != nil {
 		glog.Fatalf("Couldn't create scheduler config: %v", err)
@@ -222,6 +223,7 @@ func startComponents(firstManifestURL, secondManifestURL string) (string, string
 		10*time.Second, /* MinimumGCAge */
 		3*time.Second,  /* NodeStatusUpdateFrequency */
 		10*time.Second, /* SyncFrequency */
+		10*time.Second, /* OutOfDiskTransitionFrequency */
 		40,             /* MaxPods */
 		cm, net.ParseIP("127.0.0.1"))
 
@@ -254,6 +256,7 @@ func startComponents(firstManifestURL, secondManifestURL string) (string, string
 		10*time.Second, /* MinimumGCAge */
 		3*time.Second,  /* NodeStatusUpdateFrequency */
 		10*time.Second, /* SyncFrequency */
+		10*time.Second, /* OutOfDiskTransitionFrequency */
 
 		40, /* MaxPods */
 		cm,

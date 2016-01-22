@@ -13503,6 +13503,9 @@
    "v1.NodeStatus": {
     "id": "v1.NodeStatus",
     "description": "NodeStatus is information about the current status of a node.",
+    "required": [
+     "images"
+    ],
     "properties": {
      "capacity": {
       "type": "any",
@@ -13537,6 +13540,13 @@
      "nodeInfo": {
       "$ref": "v1.NodeSystemInfo",
       "description": "Set of ids/uuids to uniquely identify the node. More info: http://releases.k8s.io/HEAD/docs/admin/node.md#node-info"
+     },
+     "images": {
+      "type": "array",
+      "items": {
+       "$ref": "v1.ContainerImage"
+      },
+      "description": "List of container images on this node"
      }
     }
    },
@@ -13661,6 +13671,27 @@
      "kubeProxyVersion": {
       "type": "string",
       "description": "KubeProxy Version reported by the node."
+     }
+    }
+   },
+   "v1.ContainerImage": {
+    "id": "v1.ContainerImage",
+    "description": "Describe a container image",
+    "required": [
+     "repoTags"
+    ],
+    "properties": {
+     "repoTags": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "Names by which this image is known. e.g. [\"gcr.io/google_containers/hyperkube:v1.0.7\", \"dockerhub.io/google_containers/hyperkube:v1.0.7\"]"
+     },
+     "size": {
+      "type": "integer",
+      "format": "int64",
+      "description": "The size of the image in bytes."
      }
     }
    },
@@ -14505,13 +14536,10 @@
    "v1.SecretVolumeSource": {
     "id": "v1.SecretVolumeSource",
     "description": "Adapts a Secret into a volume.\n\nThe contents of the target Secret's Data field will be presented in a volume as files using the keys in the Data field as the file names. Secret volumes support ownership management and SELinux relabeling.",
-    "required": [
-     "secretName"
-    ],
     "properties": {
      "secretName": {
       "type": "string",
-      "description": "SecretName is the name of a secret in the pod's namespace. More info: http://releases.k8s.io/HEAD/docs/user-guide/volumes.md#secrets"
+      "description": "Name of the secret in the pod's namespace to use. More info: http://releases.k8s.io/HEAD/docs/user-guide/volumes.md#secrets"
      }
     }
    },
@@ -14731,13 +14759,52 @@
    "v1.EnvVarSource": {
     "id": "v1.EnvVarSource",
     "description": "EnvVarSource represents a source for the value of an EnvVar.",
-    "required": [
-     "fieldRef"
-    ],
     "properties": {
      "fieldRef": {
       "$ref": "v1.ObjectFieldSelector",
-      "description": "Selects a field of the pod. Only name and namespace are supported."
+      "description": "Selects a field of the pod; only name and namespace are supported."
+     },
+     "configMapKeyRef": {
+      "$ref": "v1.ConfigMapKeySelector",
+      "description": "Selects a key of a ConfigMap."
+     },
+     "secretKeyRef": {
+      "$ref": "v1.SecretKeySelector",
+      "description": "Selects a key of a secret in the pod's namespace"
+     }
+    }
+   },
+   "v1.ConfigMapKeySelector": {
+    "id": "v1.ConfigMapKeySelector",
+    "description": "Selects a key from a ConfigMap.",
+    "required": [
+     "key"
+    ],
+    "properties": {
+     "name": {
+      "type": "string",
+      "description": "Name of the referent. More info: http://releases.k8s.io/HEAD/docs/user-guide/identifiers.md#names"
+     },
+     "key": {
+      "type": "string",
+      "description": "The key to select."
+     }
+    }
+   },
+   "v1.SecretKeySelector": {
+    "id": "v1.SecretKeySelector",
+    "description": "SecretKeySelector selects a key of a Secret.",
+    "required": [
+     "key"
+    ],
+    "properties": {
+     "name": {
+      "type": "string",
+      "description": "Name of the referent. More info: http://releases.k8s.io/HEAD/docs/user-guide/identifiers.md#names"
+     },
+     "key": {
+      "type": "string",
+      "description": "The key of the secret to select from.  Must be a valid secret key."
      }
     }
    },

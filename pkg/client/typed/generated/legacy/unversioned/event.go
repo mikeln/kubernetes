@@ -21,8 +21,9 @@ import (
 	watch "k8s.io/kubernetes/pkg/watch"
 )
 
-// EventNamespacer has methods to work with Event resources in a namespace
-type EventNamespacer interface {
+// EventsGetter has a method to return a EventInterface.
+// A group's client should implement this interface.
+type EventsGetter interface {
 	Events(namespace string) EventInterface
 }
 
@@ -35,6 +36,7 @@ type EventInterface interface {
 	Get(name string) (*api.Event, error)
 	List(opts api.ListOptions) (*api.EventList, error)
 	Watch(opts api.ListOptions) (watch.Interface, error)
+	EventExpansion
 }
 
 // events implements EventInterface
@@ -90,7 +92,7 @@ func (c *events) Delete(name string, options *api.DeleteOptions) error {
 // DeleteCollection deletes a collection of objects.
 func (c *events) DeleteCollection(options *api.DeleteOptions, listOptions api.ListOptions) error {
 	return c.client.Delete().
-		NamespaceIfScoped(c.ns, len(c.ns) > 0).
+		Namespace(c.ns).
 		Resource("events").
 		VersionedParams(&listOptions, api.Scheme).
 		Body(options).

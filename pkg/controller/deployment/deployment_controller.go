@@ -34,6 +34,8 @@ import (
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/util"
 	deploymentutil "k8s.io/kubernetes/pkg/util/deployment"
+	labelsutil "k8s.io/kubernetes/pkg/util/labels"
+	podutil "k8s.io/kubernetes/pkg/util/pod"
 	"k8s.io/kubernetes/pkg/util/workqueue"
 	"k8s.io/kubernetes/pkg/watch"
 )
@@ -43,6 +45,9 @@ const (
 	// of all deployments that have fulfilled their expectations at least this often.
 	// This recomputation happens based on contents in the local caches.
 	FullDeploymentResyncPeriod = 30 * time.Second
+	// We must avoid creating new rc until the rc store has synced. If it hasn't synced, to
+	// avoid a hot loop, we'll wait this long between checks.
+	RcStoreSyncedPollPeriod = 100 * time.Millisecond
 )
 
 // DeploymentController is responsible for synchronizing Deployment objects stored
@@ -75,7 +80,11 @@ type DeploymentController struct {
 	podStoreSynced func() bool
 
 	// A TTLCache of pod creates/deletes each deployment expects to see
-	expectations controller.ControllerExpectationsInterface
+	podExpectations controller.ControllerExpectationsInterface
+
+	// A TTLCache of rc creates/deletes each deployment expects to see
+	// TODO: make expectation model understand (rc) updates (besides adds and deletes)
+	rcExpectations controller.ControllerExpectationsInterface
 
 	// Deployments that need to be synced
 	queue *workqueue.Type
@@ -88,11 +97,12 @@ func NewDeploymentController(client client.Interface, resyncPeriod controller.Re
 	eventBroadcaster.StartRecordingToSink(client.Events(""))
 
 	dc := &DeploymentController{
-		client:        client,
-		expClient:     client.Extensions(),
-		eventRecorder: eventBroadcaster.NewRecorder(api.EventSource{Component: "deployment-controller"}),
-		queue:         workqueue.New(),
-		expectations:  controller.NewControllerExpectations(),
+		client:          client,
+		expClient:       client.Extensions(),
+		eventRecorder:   eventBroadcaster.NewRecorder(api.EventSource{Component: "deployment-controller"}),
+		queue:           workqueue.New(),
+		podExpectations: controller.NewControllerExpectations(),
+		rcExpectations:  controller.NewControllerExpectations(),
 	}
 
 	dc.dStore.Store, dc.dController = framework.NewInformer(
@@ -107,13 +117,23 @@ func NewDeploymentController(client client.Interface, resyncPeriod controller.Re
 		&extensions.Deployment{},
 		FullDeploymentResyncPeriod,
 		framework.ResourceEventHandlerFuncs{
-			AddFunc: dc.enqueueDeployment,
+			AddFunc: func(obj interface{}) {
+				d := obj.(*extensions.Deployment)
+				glog.V(4).Infof("Adding deployment %s", d.Name)
+				dc.enqueueDeployment(obj)
+			},
 			UpdateFunc: func(old, cur interface{}) {
+				oldD := old.(*extensions.Deployment)
+				glog.V(4).Infof("Updating deployment %s", oldD.Name)
 				// Resync on deployment object relist.
 				dc.enqueueDeployment(cur)
 			},
 			// This will enter the sync loop and no-op, because the deployment has been deleted from the store.
-			DeleteFunc: dc.enqueueDeployment,
+			DeleteFunc: func(obj interface{}) {
+				d := obj.(*extensions.Deployment)
+				glog.V(4).Infof("Deleting deployment %s", d.Name)
+				dc.enqueueDeployment(obj)
+			},
 		},
 	)
 
@@ -178,7 +198,13 @@ func (dc *DeploymentController) Run(workers int, stopCh <-chan struct{}) {
 func (dc *DeploymentController) addRC(obj interface{}) {
 	rc := obj.(*api.ReplicationController)
 	glog.V(4).Infof("Replication controller %s added.", rc.Name)
-	if d := dc.getDeploymentForRC(rc); rc != nil {
+	if d := dc.getDeploymentForRC(rc); d != nil {
+		dKey, err := controller.KeyFunc(d)
+		if err != nil {
+			glog.Errorf("Couldn't get key for deployment controller %#v: %v", d, err)
+			return
+		}
+		dc.rcExpectations.CreationObserved(dKey)
 		dc.enqueueDeployment(d)
 	}
 }
@@ -316,7 +342,7 @@ func (dc *DeploymentController) deletePod(obj interface{}) {
 			glog.Errorf("Couldn't get key for deployment controller %#v: %v", d, err)
 			return
 		}
-		dc.expectations.DeletionObserved(dKey)
+		dc.podExpectations.DeletionObserved(dKey)
 	}
 }
 
@@ -371,10 +397,19 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 	}
 	if !exists {
 		glog.Infof("Deployment has been deleted %v", key)
-		dc.expectations.DeleteExpectations(key)
+		dc.podExpectations.DeleteExpectations(key)
+		dc.rcExpectations.DeleteExpectations(key)
 		return nil
 	}
 	d := *obj.(*extensions.Deployment)
+	if !dc.rcStoreSynced() {
+		// Sleep so we give the rc reflector goroutine a chance to run.
+		time.Sleep(RcStoreSyncedPollPeriod)
+		glog.Infof("Waiting for rc controller to sync, requeuing deployment %s", d.Name)
+		dc.enqueueDeployment(&d)
+		return nil
+	}
+
 	switch d.Spec.Strategy.Type {
 	case extensions.RecreateDeploymentStrategyType:
 		return dc.syncRecreateDeployment(d)
@@ -385,8 +420,42 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 }
 
 func (dc *DeploymentController) syncRecreateDeployment(deployment extensions.Deployment) error {
-	// TODO: implement me.
-	return nil
+	newRC, err := dc.getNewRC(deployment)
+	if err != nil {
+		return err
+	}
+
+	oldRCs, err := dc.getOldRCs(deployment)
+	if err != nil {
+		return err
+	}
+
+	allRCs := append(oldRCs, newRC)
+
+	// scale down old rcs
+	scaledDown, err := dc.scaleDownOldRCsForRecreate(oldRCs, deployment)
+	if err != nil {
+		return err
+	}
+	if scaledDown {
+		// Update DeploymentStatus
+		return dc.updateDeploymentStatus(allRCs, newRC, deployment)
+	}
+
+	// scale up new rc
+	scaledUp, err := dc.scaleUpNewRCForRecreate(newRC, deployment)
+	if err != nil {
+		return err
+	}
+	if scaledUp {
+		// Update DeploymentStatus
+		return dc.updateDeploymentStatus(allRCs, newRC, deployment)
+	}
+
+	// Sync deployment status
+	return dc.syncDeploymentStatus(allRCs, newRC, deployment)
+
+	// TODO: raise an event, neither scaled up nor down.
 }
 
 func (dc *DeploymentController) syncRollingUpdateDeployment(deployment extensions.Deployment) error {
@@ -423,13 +492,18 @@ func (dc *DeploymentController) syncRollingUpdateDeployment(deployment extension
 	}
 
 	// Sync deployment status
+	return dc.syncDeploymentStatus(allRCs, newRC, deployment)
+
+	// TODO: raise an event, neither scaled up nor down.
+}
+
+// syncDeploymentStatus checks if the status is up-to-date and sync it if necessary
+func (dc *DeploymentController) syncDeploymentStatus(allRCs []*api.ReplicationController, newRC *api.ReplicationController, deployment extensions.Deployment) error {
 	totalReplicas := deploymentutil.GetReplicaCountForRCs(allRCs)
 	updatedReplicas := deploymentutil.GetReplicaCountForRCs([]*api.ReplicationController{newRC})
 	if deployment.Status.Replicas != totalReplicas || deployment.Status.UpdatedReplicas != updatedReplicas {
 		return dc.updateDeploymentStatus(allRCs, newRC, deployment)
 	}
-
-	// TODO: raise an event, neither scaled up nor down.
 	return nil
 }
 
@@ -454,13 +528,29 @@ func (dc *DeploymentController) getNewRC(deployment extensions.Deployment) (*api
 	if err != nil || existingNewRC != nil {
 		return existingNewRC, err
 	}
+	// Check the rc expectations of deployment before creating a new rc
+	dKey, err := controller.KeyFunc(&deployment)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't get key for deployment %#v: %v", deployment, err)
+	}
+	if !dc.rcExpectations.SatisfiedExpectations(dKey) {
+		dc.enqueueDeployment(&deployment)
+		return nil, fmt.Errorf("RC expectations not met yet before getting new RC\n")
+	}
 	// new RC does not exist, create one.
 	namespace := deployment.ObjectMeta.Namespace
-	podTemplateSpecHash := deploymentutil.GetPodTemplateSpecHash(deployment.Spec.Template)
+	podTemplateSpecHash := podutil.GetPodTemplateSpecHash(deployment.Spec.Template)
 	newRCTemplate := deploymentutil.GetNewRCTemplate(deployment)
 	// Add podTemplateHash label to selector.
-	newRCSelector := deploymentutil.CloneAndAddLabel(deployment.Spec.Selector, deployment.Spec.UniqueLabelKey, podTemplateSpecHash)
+	newRCSelector := labelsutil.CloneAndAddLabel(deployment.Spec.Selector, deployment.Spec.UniqueLabelKey, podTemplateSpecHash)
 
+	// Set RC expectations (1 rc should be created)
+	dKey, err = controller.KeyFunc(&deployment)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't get key for deployment controller %#v: %v", deployment, err)
+	}
+	dc.rcExpectations.ExpectCreations(dKey, 1)
+	// Create new RC
 	newRC := api.ReplicationController{
 		ObjectMeta: api.ObjectMeta{
 			GenerateName: deployment.Name + "-",
@@ -474,6 +564,7 @@ func (dc *DeploymentController) getNewRC(deployment extensions.Deployment) (*api
 	}
 	createdRC, err := dc.client.ReplicationControllers(namespace).Create(&newRC)
 	if err != nil {
+		dc.rcExpectations.DeleteExpectations(dKey)
 		return nil, fmt.Errorf("error creating replication controller: %v", err)
 	}
 	return createdRC, nil
@@ -535,8 +626,8 @@ func (dc *DeploymentController) reconcileOldRCs(allRCs []*api.ReplicationControl
 	if err != nil {
 		return false, fmt.Errorf("Couldn't get key for deployment %#v: %v", deployment, err)
 	}
-	if expectationsCheck && !dc.expectations.SatisfiedExpectations(dKey) {
-		fmt.Printf("Expectations not met yet before reconciling old RCs\n")
+	if expectationsCheck && !dc.podExpectations.SatisfiedExpectations(dKey) {
+		glog.V(4).Infof("Pod expectations not met yet before reconciling old RCs\n")
 		return false, nil
 	}
 	// Find the number of ready pods.
@@ -550,6 +641,7 @@ func (dc *DeploymentController) reconcileOldRCs(allRCs []*api.ReplicationControl
 		return false, nil
 	}
 	totalScaleDownCount := readyPodCount - minAvailable
+	totalScaledDown := 0
 	for _, targetRC := range oldRCs {
 		if totalScaleDownCount == 0 {
 			// No further scaling required.
@@ -566,15 +658,44 @@ func (dc *DeploymentController) reconcileOldRCs(allRCs []*api.ReplicationControl
 		if err != nil {
 			return false, err
 		}
+		totalScaledDown += scaleDownCount
 		totalScaleDownCount -= scaleDownCount
-		dKey, err := controller.KeyFunc(&deployment)
-		if err != nil {
-			return false, fmt.Errorf("Couldn't get key for deployment %#v: %v", deployment, err)
-		}
-		if expectationsCheck {
-			dc.expectations.ExpectDeletions(dKey, scaleDownCount)
-		}
 	}
+	// Expect to see old rcs scaled down by exactly totalScaledDownCount (sum of scaleDownCount) replicas.
+	dKey, err = controller.KeyFunc(&deployment)
+	if err != nil {
+		return false, fmt.Errorf("Couldn't get key for deployment %#v: %v", deployment, err)
+	}
+	if expectationsCheck {
+		dc.podExpectations.ExpectDeletions(dKey, totalScaledDown)
+	}
+	return true, err
+}
+
+// scaleDownOldRCsForRecreate scales down old rcs when deployment strategy is "Recreate"
+func (dc *DeploymentController) scaleDownOldRCsForRecreate(oldRCs []*api.ReplicationController, deployment extensions.Deployment) (bool, error) {
+	scaled := false
+	for _, rc := range oldRCs {
+		// Scaling not required.
+		if rc.Spec.Replicas == 0 {
+			continue
+		}
+		_, err := dc.scaleRCAndRecordEvent(rc, 0, deployment)
+		if err != nil {
+			return false, err
+		}
+		scaled = true
+	}
+	return scaled, nil
+}
+
+// scaleUpNewRCForRecreate scales up new rc when deployment strategy is "Recreate"
+func (dc *DeploymentController) scaleUpNewRCForRecreate(newRC *api.ReplicationController, deployment extensions.Deployment) (bool, error) {
+	if newRC.Spec.Replicas == deployment.Spec.Replicas {
+		// Scaling not required.
+		return false, nil
+	}
+	_, err := dc.scaleRCAndRecordEvent(newRC, deployment.Spec.Replicas, deployment)
 	return true, err
 }
 

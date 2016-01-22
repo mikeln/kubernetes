@@ -21,33 +21,34 @@ import (
 	watch "k8s.io/kubernetes/pkg/watch"
 )
 
-// NamespaceNamespacer has methods to work with Namespace resources in a namespace
-type NamespaceNamespacer interface {
-	Namespaces(namespace string) NamespaceInterface
+// NamespacesGetter has a method to return a NamespaceInterface.
+// A group's client should implement this interface.
+type NamespacesGetter interface {
+	Namespaces() NamespaceInterface
 }
 
 // NamespaceInterface has methods to work with Namespace resources.
 type NamespaceInterface interface {
 	Create(*api.Namespace) (*api.Namespace, error)
 	Update(*api.Namespace) (*api.Namespace, error)
+	UpdateStatus(*api.Namespace) (*api.Namespace, error)
 	Delete(name string, options *api.DeleteOptions) error
 	DeleteCollection(options *api.DeleteOptions, listOptions api.ListOptions) error
 	Get(name string) (*api.Namespace, error)
 	List(opts api.ListOptions) (*api.NamespaceList, error)
 	Watch(opts api.ListOptions) (watch.Interface, error)
+	NamespaceExpansion
 }
 
 // namespaces implements NamespaceInterface
 type namespaces struct {
 	client *LegacyClient
-	ns     string
 }
 
 // newNamespaces returns a Namespaces
-func newNamespaces(c *LegacyClient, namespace string) *namespaces {
+func newNamespaces(c *LegacyClient) *namespaces {
 	return &namespaces{
 		client: c,
-		ns:     namespace,
 	}
 }
 
@@ -55,7 +56,6 @@ func newNamespaces(c *LegacyClient, namespace string) *namespaces {
 func (c *namespaces) Create(namespace *api.Namespace) (result *api.Namespace, err error) {
 	result = &api.Namespace{}
 	err = c.client.Post().
-		Namespace(c.ns).
 		Resource("namespaces").
 		Body(namespace).
 		Do().
@@ -67,7 +67,6 @@ func (c *namespaces) Create(namespace *api.Namespace) (result *api.Namespace, er
 func (c *namespaces) Update(namespace *api.Namespace) (result *api.Namespace, err error) {
 	result = &api.Namespace{}
 	err = c.client.Put().
-		Namespace(c.ns).
 		Resource("namespaces").
 		Name(namespace.Name).
 		Body(namespace).
@@ -76,10 +75,15 @@ func (c *namespaces) Update(namespace *api.Namespace) (result *api.Namespace, er
 	return
 }
 
+func (c *namespaces) UpdateStatus(namespace *api.Namespace) (*api.Namespace, error) {
+	result := &api.Namespace{}
+	err := c.client.Put().Resource("namespaces").Name(namespace.Name).SubResource("status").Body(namespace).Do().Into(result)
+	return result, err
+}
+
 // Delete takes name of the namespace and deletes it. Returns an error if one occurs.
 func (c *namespaces) Delete(name string, options *api.DeleteOptions) error {
 	return c.client.Delete().
-		Namespace(c.ns).
 		Resource("namespaces").
 		Name(name).
 		Body(options).
@@ -90,7 +94,6 @@ func (c *namespaces) Delete(name string, options *api.DeleteOptions) error {
 // DeleteCollection deletes a collection of objects.
 func (c *namespaces) DeleteCollection(options *api.DeleteOptions, listOptions api.ListOptions) error {
 	return c.client.Delete().
-		NamespaceIfScoped(c.ns, len(c.ns) > 0).
 		Resource("namespaces").
 		VersionedParams(&listOptions, api.Scheme).
 		Body(options).
@@ -102,7 +105,6 @@ func (c *namespaces) DeleteCollection(options *api.DeleteOptions, listOptions ap
 func (c *namespaces) Get(name string) (result *api.Namespace, err error) {
 	result = &api.Namespace{}
 	err = c.client.Get().
-		Namespace(c.ns).
 		Resource("namespaces").
 		Name(name).
 		Do().
@@ -114,7 +116,6 @@ func (c *namespaces) Get(name string) (result *api.Namespace, err error) {
 func (c *namespaces) List(opts api.ListOptions) (result *api.NamespaceList, err error) {
 	result = &api.NamespaceList{}
 	err = c.client.Get().
-		Namespace(c.ns).
 		Resource("namespaces").
 		VersionedParams(&opts, api.Scheme).
 		Do().
@@ -126,7 +127,6 @@ func (c *namespaces) List(opts api.ListOptions) (result *api.NamespaceList, err 
 func (c *namespaces) Watch(opts api.ListOptions) (watch.Interface, error) {
 	return c.client.Get().
 		Prefix("watch").
-		Namespace(c.ns).
 		Resource("namespaces").
 		VersionedParams(&opts, api.Scheme).
 		Watch()
