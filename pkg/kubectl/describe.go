@@ -908,7 +908,11 @@ func describeJob(job *extensions.Job, events *api.EventList) (string, error) {
 		selector, _ := extensions.LabelSelectorAsSelector(job.Spec.Selector)
 		fmt.Fprintf(out, "Selector:\t%s\n", selector)
 		fmt.Fprintf(out, "Parallelism:\t%d\n", *job.Spec.Parallelism)
-		fmt.Fprintf(out, "Completions:\t%d\n", *job.Spec.Completions)
+		if job.Spec.Completions != nil {
+			fmt.Fprintf(out, "Completions:\t%d\n", *job.Spec.Completions)
+		} else {
+			fmt.Fprintf(out, "Completions:\tNot Set\n")
+		}
 		if job.Status.StartTime != nil {
 			fmt.Fprintf(out, "Start Time:\t%s\n", job.Status.StartTime.Time.Format(time.RFC1123Z))
 		}
@@ -1587,7 +1591,7 @@ func (dd *DeploymentDescriber) Describe(namespace, name string) (string, error) 
 		fmt.Fprintf(out, "CreationTimestamp:\t%s\n", d.CreationTimestamp.Time.Format(time.RFC1123Z))
 		fmt.Fprintf(out, "Labels:\t%s\n", labels.FormatLabels(d.Labels))
 		fmt.Fprintf(out, "Selector:\t%s\n", labels.FormatLabels(d.Spec.Selector))
-		fmt.Fprintf(out, "Replicas:\t%d updated / %d total\n", d.Status.UpdatedReplicas, d.Spec.Replicas)
+		fmt.Fprintf(out, "Replicas:\t%d updated | %d total | %d available | %d unavailable\n", d.Status.UpdatedReplicas, d.Spec.Replicas, d.Status.AvailableReplicas, d.Status.UnavailableReplicas)
 		fmt.Fprintf(out, "StrategyType:\t%s\n", d.Spec.Strategy.Type)
 		if d.Spec.Strategy.RollingUpdate != nil {
 			ru := d.Spec.Strategy.RollingUpdate

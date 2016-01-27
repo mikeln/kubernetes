@@ -144,11 +144,14 @@ func (h *etcdHelper) Versioner() storage.Versioner {
 
 // Implements storage.Interface.
 func (h *etcdHelper) Create(ctx context.Context, key string, obj, out runtime.Object, ttl uint64) error {
+	trace := util.NewTrace("etcdHelper::Create " + getTypeName(obj))
+	defer trace.LogIfLong(250 * time.Millisecond)
 	if ctx == nil {
 		glog.Errorf("Context is nil")
 	}
 	key = h.prefixEtcdKey(key)
-	data, err := h.codec.Encode(obj)
+	data, err := runtime.Encode(h.codec, obj)
+	trace.Step("Object encoded")
 	if err != nil {
 		return err
 	}
@@ -157,6 +160,7 @@ func (h *etcdHelper) Create(ctx context.Context, key string, obj, out runtime.Ob
 			return errors.New("resourceVersion may not be set on objects to be created")
 		}
 	}
+	trace.Step("Version checked")
 
 	startTime := time.Now()
 	opts := etcd.SetOptions{
@@ -165,6 +169,7 @@ func (h *etcdHelper) Create(ctx context.Context, key string, obj, out runtime.Ob
 	}
 	response, err := h.client.Set(ctx, key, string(data), &opts)
 	metrics.RecordEtcdRequestLatency("create", getTypeName(obj), startTime)
+	trace.Step("Object created")
 	if err != nil {
 		return err
 	}
@@ -183,7 +188,7 @@ func (h *etcdHelper) Set(ctx context.Context, key string, obj, out runtime.Objec
 		glog.Errorf("Context is nil")
 	}
 	var response *etcd.Response
-	data, err := h.codec.Encode(obj)
+	data, err := runtime.Encode(h.codec, obj)
 	if err != nil {
 		return err
 	}
@@ -333,7 +338,13 @@ func (h *etcdHelper) extractObj(response *etcd.Response, inErr error, objPtr run
 		return "", nil, fmt.Errorf("unable to locate a value on the response: %#v", response)
 	}
 	body = node.Value
-	err = h.codec.DecodeInto([]byte(body), objPtr)
+	out, gvk, err := h.codec.Decode([]byte(body), nil, objPtr)
+	if err != nil {
+		return body, nil, err
+	}
+	if out != objPtr {
+		return body, nil, fmt.Errorf("unable to decode object %s into %v", gvk.String(), reflect.TypeOf(objPtr))
+	}
 	if h.versioner != nil {
 		_ = h.versioner.UpdateObject(objPtr, node.Expiration, node.ModifiedIndex)
 		// being unable to set the version does not prevent the object from being extracted
@@ -403,19 +414,19 @@ func (h *etcdHelper) decodeNodeList(nodes []*etcd.Node, filter storage.FilterFun
 				v.Set(reflect.Append(v, reflect.ValueOf(obj).Elem()))
 			}
 		} else {
-			obj := reflect.New(v.Type().Elem())
-			if err := h.codec.DecodeInto([]byte(node.Value), obj.Interface().(runtime.Object)); err != nil {
+			obj, _, err := h.codec.Decode([]byte(node.Value), nil, reflect.New(v.Type().Elem()).Interface().(runtime.Object))
+			if err != nil {
 				return err
 			}
 			if h.versioner != nil {
 				// being unable to set the version does not prevent the object from being extracted
-				_ = h.versioner.UpdateObject(obj.Interface().(runtime.Object), node.Expiration, node.ModifiedIndex)
+				_ = h.versioner.UpdateObject(obj, node.Expiration, node.ModifiedIndex)
 			}
-			if filter(obj.Interface().(runtime.Object)) {
-				v.Set(reflect.Append(v, obj.Elem()))
+			if filter(obj) {
+				v.Set(reflect.Append(v, reflect.ValueOf(obj).Elem()))
 			}
 			if node.ModifiedIndex != 0 {
-				h.addToCache(node.ModifiedIndex, obj.Interface().(runtime.Object))
+				h.addToCache(node.ModifiedIndex, obj)
 			}
 		}
 	}
@@ -532,7 +543,7 @@ func (h *etcdHelper) GuaranteedUpdate(ctx context.Context, key string, ptrToType
 			ttl = *newTTL
 		}
 
-		data, err := h.codec.Encode(ret)
+		data, err := runtime.Encode(h.codec, ret)
 		if err != nil {
 			return err
 		}

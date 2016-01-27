@@ -34,7 +34,7 @@ import (
 	"k8s.io/kubernetes/pkg/util/sets"
 )
 
-const importPrefix = "k8s.io/kubernetes/pkg/apis/testgroup"
+const importPrefix = "k8s.io/kubernetes/cmd/libs/go2idl/client-gen/testdata/apis/testgroup"
 
 var accessor = meta.NewAccessor()
 
@@ -68,7 +68,6 @@ func enableVersions(externalVersions []unversioned.GroupVersion) error {
 	groupMeta := apimachinery.GroupMeta{
 		GroupVersion:  preferredExternalVersion,
 		GroupVersions: externalVersions,
-		Codec:         runtime.CodecFor(api.Scheme, preferredExternalVersion),
 		RESTMapper:    newRESTMapper(externalVersions),
 		SelfLinker:    runtime.SelfLinker(accessor),
 		InterfacesFor: interfacesFor,
@@ -97,7 +96,6 @@ func interfacesFor(version unversioned.GroupVersion) (*meta.VersionInterfaces, e
 	switch version {
 	case v1.SchemeGroupVersion:
 		return &meta.VersionInterfaces{
-			Codec:            v1.Codec,
 			ObjectConvertor:  api.Scheme,
 			MetadataAccessor: accessor,
 		}, nil

@@ -105,7 +105,7 @@ func RunScale(f *cmdutil.Factory, out io.Writer, cmd *cobra.Command, args []stri
 	}
 
 	mapper, typer := f.Object()
-	r := resource.NewBuilder(mapper, typer, f.ClientMapperForCommand()).
+	r := resource.NewBuilder(mapper, typer, resource.ClientMapperFunc(f.ClientForMapping), f.Decoder(true)).
 		ContinueOnError().
 		NamespaceParam(cmdNamespace).DefaultNamespace().
 		FilenameParam(enforceNamespace, options.Filenames...).
@@ -146,10 +146,6 @@ func RunScale(f *cmdutil.Factory, out io.Writer, cmd *cobra.Command, args []stri
 	errs := []error{}
 	for _, info := range infos {
 		if err := scaler.Scale(info.Namespace, info.Name, uint(count), precondition, retry, waitForReplicas); err != nil {
-			if scaleErr, ok := err.(kubectl.ScaleError); ok && scaleErr.FailureType == kubectl.AlreadyScaled {
-				cmdutil.PrintSuccess(mapper, shortOutput, out, info.Mapping.Resource, info.Name, "already scaled")
-				continue
-			}
 			errs = append(errs, err)
 			continue
 		}

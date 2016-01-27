@@ -213,6 +213,10 @@ type DeploymentSpec struct {
 	// Value of this key is hash of DeploymentSpec.PodTemplateSpec.
 	// No label is added if this is set to empty string.
 	UniqueLabelKey *string `json:"uniqueLabelKey,omitempty"`
+
+	// Indicates that the deployment is paused and will not be processed by the
+	// deployment controller.
+	Paused bool `json:"paused,omitempty"`
 }
 
 const (
@@ -286,6 +290,12 @@ type DeploymentStatus struct {
 
 	// Total number of non-terminated pods targeted by this deployment that have the desired template spec.
 	UpdatedReplicas int32 `json:"updatedReplicas,omitempty"`
+
+	// Total number of available pods (ready for at least minReadySeconds) targeted by this deployment.
+	AvailableReplicas int32 `json:"availableReplicas,omitempty"`
+
+	// Total number of unavailable pods targeted by this deployment.
+	UnavailableReplicas int32 `json:"unavailableReplicas,omitempty"`
 }
 
 // DeploymentList is a list of Deployments.
@@ -473,8 +483,10 @@ type JobSpec struct {
 	Parallelism *int32 `json:"parallelism,omitempty"`
 
 	// Completions specifies the desired number of successfully finished pods the
-	// job should be run with. Defaults to 1.
-	// More info: http://releases.k8s.io/HEAD/docs/user-guide/jobs.md
+	// job should be run with.  Setting to nil means that the success of any
+	// pod signals the success of all pods, and allows parallelism to have any positive
+	// value.  Setting to 1 means that parallelism is limited to 1 and the success of that
+	// pod signals the success of the job.
 	Completions *int32 `json:"completions,omitempty"`
 
 	// Optional duration in seconds relative to the startTime that the job may be active

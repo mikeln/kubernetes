@@ -26,7 +26,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
-	"runtime"
+	gruntime "runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,6 +52,7 @@ import (
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
 	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/master"
+	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/util"
 	utilnet "k8s.io/kubernetes/pkg/util/net"
 	"k8s.io/kubernetes/pkg/util/sets"
@@ -435,13 +436,16 @@ containers:
 }
 
 func runReplicationControllerTest(c *client.Client) {
+	t := time.Now()
 	clientAPIVersion := c.APIVersion().String()
 	data, err := ioutil.ReadFile("cmd/integration/" + clientAPIVersion + "-controller.json")
 	if err != nil {
 		glog.Fatalf("Unexpected error: %v", err)
 	}
+	glog.Infof("Done reading config file, took %v", time.Since(t))
+	t = time.Now()
 	var controller api.ReplicationController
-	if err := api.Scheme.DecodeInto(data, &controller); err != nil {
+	if err := runtime.DecodeInto(testapi.Default.Codec(), data, &controller); err != nil {
 		glog.Fatalf("Unexpected error: %v", err)
 	}
 
@@ -450,7 +454,8 @@ func runReplicationControllerTest(c *client.Client) {
 	if err != nil {
 		glog.Fatalf("Unexpected error: %v", err)
 	}
-	glog.Infof("Done creating replication controllers")
+	glog.Infof("Done creating replication controllers, took %v", time.Since(t))
+	t = time.Now()
 
 	// In practice the controller doesn't need 60s to create a handful of pods, but network latencies on CI
 	// systems have been observed to vary unpredictably, so give the controller enough time to create pods.
@@ -458,6 +463,8 @@ func runReplicationControllerTest(c *client.Client) {
 	if err := wait.Poll(time.Second, longTestTimeout, client.ControllerHasDesiredReplicas(c, updated)); err != nil {
 		glog.Fatalf("FAILED: pods never created %v", err)
 	}
+	glog.Infof("Done creating replicas, took %v", time.Since(t))
+	t = time.Now()
 
 	// Poll till we can retrieve the status of all pods matching the given label selector from their nodes.
 	// This involves 3 operations:
@@ -469,7 +476,7 @@ func runReplicationControllerTest(c *client.Client) {
 		glog.Fatalf("FAILED: pods never started running %v", err)
 	}
 
-	glog.Infof("Pods created")
+	glog.Infof("Pods verified on nodes, took %v", time.Since(t))
 }
 
 func runAPIVersionsTest(c *client.Client) {
@@ -952,7 +959,7 @@ func addFlags(fs *pflag.FlagSet) {
 }
 
 func main() {
-	runtime.GOMAXPROCS(runtime.NumCPU())
+	gruntime.GOMAXPROCS(gruntime.NumCPU())
 	addFlags(pflag.CommandLine)
 
 	util.InitFlags()

@@ -31,13 +31,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coreos/go-semver/semver"
 	docker "github.com/fsouza/go-dockerclient"
 	"github.com/golang/glog"
 	"github.com/golang/groupcache/lru"
 	cadvisorapi "github.com/google/cadvisor/info/v1"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/unversioned"
-	"k8s.io/kubernetes/pkg/apimachinery/registered"
 	"k8s.io/kubernetes/pkg/client/record"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
@@ -48,6 +48,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/qos"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
 	"k8s.io/kubernetes/pkg/kubelet/util/format"
+	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/securitycontext"
 	"k8s.io/kubernetes/pkg/types"
 	"k8s.io/kubernetes/pkg/util"
@@ -655,11 +656,12 @@ func (dm *DockerManager) runContainer(
 	// TODO(random-liu): Remove this when we start to use new labels for KillContainerInPod
 	if container.Lifecycle != nil && container.Lifecycle.PreStop != nil {
 		// TODO: This is kind of hacky, we should really just encode the bits we need.
-		data, err := registered.GroupOrDie(api.GroupName).Codec.Encode(pod)
-		if err != nil {
-			glog.Errorf("Failed to encode pod: %s for prestop hook", pod.Name)
-		} else {
+		// TODO: This is hacky because the Kubelet should be parameterized to encode a specific version
+		//   and needs to be able to migrate this whenever we deprecate v1. Should be a member of DockerManager.
+		if data, err := runtime.Encode(api.Codecs.LegacyCodec(unversioned.GroupVersion{Group: api.GroupName, Version: "v1"}), pod); err == nil {
 			labels[kubernetesPodLabel] = string(data)
+		} else {
+			glog.Errorf("Failed to encode pod: %s for prestop hook", pod.Name)
 		}
 	}
 	memoryLimit := container.Resources.Limits.Memory().Value()
@@ -944,18 +946,47 @@ func (dm *DockerManager) podInfraContainerChanged(pod *api.Pod, podInfraContaine
 	return podInfraContainerStatus.Hash != kubecontainer.HashContainer(expectedPodInfraContainer), nil
 }
 
-type dockerVersion docker.APIVersion
-
-func NewVersion(input string) (dockerVersion, error) {
-	version, err := docker.NewAPIVersion(input)
-	return dockerVersion(version), err
+// dockerVersion implementes kubecontainer.Version interface by implementing
+// Compare() and String() (which is implemented by the underlying semver.Version)
+// TODO: this code is the same as rktVersion and may make sense to be moved to
+// somewhere shared.
+type dockerVersion struct {
+	*semver.Version
 }
 
-func (dv dockerVersion) String() string {
+func newDockerVersion(version string) (dockerVersion, error) {
+	sem, err := semver.NewVersion(version)
+	if err != nil {
+		return dockerVersion{}, err
+	}
+	return dockerVersion{sem}, nil
+}
+
+func (r dockerVersion) Compare(other string) (int, error) {
+	v, err := semver.NewVersion(other)
+	if err != nil {
+		return -1, err
+	}
+
+	if r.LessThan(*v) {
+		return -1, nil
+	}
+	if v.LessThan(*r.Version) {
+		return 1, nil
+	}
+	return 0, nil
+}
+
+// dockerVersion implementes kubecontainer.Version interface by implementing
+// Compare() and String() on top og go-dockerclient's APIVersion. This version
+// string doesn't conform to semantic versioning, as it is only "x.y"
+type dockerAPIVersion docker.APIVersion
+
+func (dv dockerAPIVersion) String() string {
 	return docker.APIVersion(dv).String()
 }
 
-func (dv dockerVersion) Compare(other string) (int, error) {
+func (dv dockerAPIVersion) Compare(other string) (int, error) {
 	a := docker.APIVersion(dv)
 	b, err := docker.NewAPIVersion(other)
 	if err != nil {
@@ -981,12 +1012,12 @@ func (dm *DockerManager) Version() (kubecontainer.Version, error) {
 	}
 
 	engineVersion := env.Get("Version")
-	version, err := docker.NewAPIVersion(engineVersion)
+	version, err := newDockerVersion(engineVersion)
 	if err != nil {
 		glog.Errorf("docker: failed to parse docker server version %q: %v", engineVersion, err)
 		return nil, fmt.Errorf("docker: failed to parse docker server version %q: %v", engineVersion, err)
 	}
-	return dockerVersion(version), nil
+	return version, nil
 }
 
 func (dm *DockerManager) APIVersion() (kubecontainer.Version, error) {
@@ -1001,7 +1032,7 @@ func (dm *DockerManager) APIVersion() (kubecontainer.Version, error) {
 		glog.Errorf("docker: failed to parse docker api version %q: %v", apiVersion, err)
 		return nil, fmt.Errorf("docker: failed to parse docker api version %q: %v", apiVersion, err)
 	}
-	return dockerVersion(version), nil
+	return dockerAPIVersion(version), nil
 }
 
 // The first version of docker that supports exec natively is 1.3.0 == API 1.15
@@ -1432,7 +1463,7 @@ func containerAndPodFromLabels(inspect *docker.Container) (pod *api.Pod, contain
 	// the pod data may not be set
 	if body, found := labels[kubernetesPodLabel]; found {
 		pod = &api.Pod{}
-		if err = registered.GroupOrDie(api.GroupName).Codec.DecodeInto([]byte(body), pod); err == nil {
+		if err = runtime.DecodeInto(api.Codecs.UniversalDecoder(), []byte(body), pod); err == nil {
 			name := labels[kubernetesContainerNameLabel]
 			for ix := range pod.Spec.Containers {
 				if pod.Spec.Containers[ix].Name == name {

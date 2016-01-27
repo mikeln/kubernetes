@@ -2760,6 +2760,7 @@ func autoConvert_extensions_DeploymentSpec_To_v1beta1_DeploymentSpec(in *extensi
 	if err := s.Convert(&in.UniqueLabelKey, &out.UniqueLabelKey, 0); err != nil {
 		return err
 	}
+	out.Paused = in.Paused
 	return nil
 }
 
@@ -2769,6 +2770,8 @@ func autoConvert_extensions_DeploymentStatus_To_v1beta1_DeploymentStatus(in *ext
 	}
 	out.Replicas = int32(in.Replicas)
 	out.UpdatedReplicas = int32(in.UpdatedReplicas)
+	out.AvailableReplicas = int32(in.AvailableReplicas)
+	out.UnavailableReplicas = int32(in.UnavailableReplicas)
 	return nil
 }
 
@@ -3933,6 +3936,7 @@ func autoConvert_v1beta1_DeploymentSpec_To_extensions_DeploymentSpec(in *Deploym
 		return err
 	}
 	// in.UniqueLabelKey has no peer in out
+	out.Paused = in.Paused
 	return nil
 }
 
@@ -3942,6 +3946,8 @@ func autoConvert_v1beta1_DeploymentStatus_To_extensions_DeploymentStatus(in *Dep
 	}
 	out.Replicas = int(in.Replicas)
 	out.UpdatedReplicas = int(in.UpdatedReplicas)
+	out.AvailableReplicas = int(in.AvailableReplicas)
+	out.UnavailableReplicas = int(in.UnavailableReplicas)
 	return nil
 }
 

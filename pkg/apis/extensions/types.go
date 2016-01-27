@@ -228,6 +228,10 @@ type DeploymentSpec struct {
 	// Value of this key is hash of DeploymentSpec.PodTemplateSpec.
 	// No label is added if this is set to empty string.
 	UniqueLabelKey string `json:"uniqueLabelKey,omitempty"`
+
+	// Indicates that the deployment is paused and will not be processed by the
+	// deployment controller.
+	Paused bool `json:"paused,omitempty"`
 }
 
 const (
@@ -298,6 +302,12 @@ type DeploymentStatus struct {
 
 	// Total number of non-terminated pods targeted by this deployment that have the desired template spec.
 	UpdatedReplicas int `json:"updatedReplicas,omitempty"`
+
+	// Total number of available pods (ready for at least minReadySeconds) targeted by this deployment.
+	AvailableReplicas int `json:"availableReplicas,omitempty"`
+
+	// Total number of unavailable pods targeted by this deployment.
+	UnavailableReplicas int `json:"unavailableReplicas,omitempty"`
 }
 
 type DeploymentList struct {
@@ -481,7 +491,7 @@ type JobSpec struct {
 	Parallelism *int `json:"parallelism,omitempty"`
 
 	// Completions specifies the desired number of successfully finished pods the
-	// job should be run with. Defaults to 1.
+	// job should be run with.  When unset, any pod exiting signals the job to complete.
 	Completions *int `json:"completions,omitempty"`
 
 	// Optional duration in seconds relative to the startTime that the job may be active

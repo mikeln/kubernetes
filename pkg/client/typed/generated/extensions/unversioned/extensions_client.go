@@ -17,7 +17,7 @@ limitations under the License.
 package unversioned
 
 import (
-	"fmt"
+	api "k8s.io/kubernetes/pkg/api"
 	registered "k8s.io/kubernetes/pkg/apimachinery/registered"
 	unversioned "k8s.io/kubernetes/pkg/client/unversioned"
 )
@@ -26,7 +26,7 @@ type ExtensionsInterface interface {
 	DaemonSetsGetter
 	DeploymentsGetter
 	HorizontalPodAutoscalersGetter
-	IngressesGetter
+	IngressGetter
 	JobsGetter
 	ScalesGetter
 	ThirdPartyResourcesGetter
@@ -49,8 +49,8 @@ func (c *ExtensionsClient) HorizontalPodAutoscalers(namespace string) Horizontal
 	return newHorizontalPodAutoscalers(c, namespace)
 }
 
-func (c *ExtensionsClient) Ingresses(namespace string) IngressInterface {
-	return newIngresses(c, namespace)
+func (c *ExtensionsClient) Ingress(namespace string) IngressInterface {
+	return newIngress(c, namespace)
 }
 
 func (c *ExtensionsClient) Jobs(namespace string) JobInterface {
@@ -109,12 +109,7 @@ func setConfigDefaults(config *unversioned.Config) error {
 	config.GroupVersion = &copyGroupVersion
 	//}
 
-	versionInterfaces, err := g.InterfacesFor(*config.GroupVersion)
-	if err != nil {
-		return fmt.Errorf("Extensions API version '%s' is not recognized (valid values: %s)",
-			config.GroupVersion, g.GroupVersions)
-	}
-	config.Codec = versionInterfaces.Codec
+	config.Codec = api.Codecs.LegacyCodec(*config.GroupVersion)
 	if config.QPS == 0 {
 		config.QPS = 5
 	}

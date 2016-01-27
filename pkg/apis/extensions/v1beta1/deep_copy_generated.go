@@ -1196,12 +1196,15 @@ func deepCopy_v1beta1_DeploymentSpec(in DeploymentSpec, out *DeploymentSpec, c *
 	} else {
 		out.UniqueLabelKey = nil
 	}
+	out.Paused = in.Paused
 	return nil
 }
 
 func deepCopy_v1beta1_DeploymentStatus(in DeploymentStatus, out *DeploymentStatus, c *conversion.Cloner) error {
 	out.Replicas = in.Replicas
 	out.UpdatedReplicas = in.UpdatedReplicas
+	out.AvailableReplicas = in.AvailableReplicas
+	out.UnavailableReplicas = in.UnavailableReplicas
 	return nil
 }
 

@@ -24,12 +24,13 @@ import (
 
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/api/validation"
-	"k8s.io/kubernetes/pkg/apimachinery/registered"
 	"k8s.io/kubernetes/pkg/client/cache"
 	"k8s.io/kubernetes/pkg/client/record"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/controller/framework"
+	"k8s.io/kubernetes/pkg/fields"
 	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/runtime"
 )
@@ -259,7 +260,13 @@ func getPodsAnnotationSet(template *api.PodTemplateSpec, object runtime.Object) 
 	if err != nil {
 		return desiredAnnotations, fmt.Errorf("unable to get controller reference: %v", err)
 	}
-	createdByRefJson, err := registered.GroupOrDie(api.GroupName).Codec.Encode(&api.SerializedReference{
+
+	// TODO: this code was not safe previously - as soon as new code came along that switched to v2, old clients
+	//   would be broken upon reading it. This is explicitly hardcoded to v1 to guarantee predictable deployment.
+	//   We need to consistently handle this case of annotation versioning.
+	codec := api.Codecs.LegacyCodec(unversioned.GroupVersion{Group: api.GroupName, Version: "v1"})
+
+	createdByRefJson, err := runtime.Encode(codec, &api.SerializedReference{
 		Reference: *createdByRef,
 	})
 	if err != nil {
@@ -412,11 +419,48 @@ func (s ActivePods) Less(i, j int) bool {
 func FilterActivePods(pods []api.Pod) []*api.Pod {
 	var result []*api.Pod
 	for i := range pods {
-		if api.PodSucceeded != pods[i].Status.Phase &&
-			api.PodFailed != pods[i].Status.Phase &&
-			pods[i].DeletionTimestamp == nil {
-			result = append(result, &pods[i])
+		p := pods[i]
+		if api.PodSucceeded != p.Status.Phase &&
+			api.PodFailed != p.Status.Phase &&
+			p.DeletionTimestamp == nil {
+			result = append(result, &p)
+		} else {
+			glog.V(4).Infof("Ignoring inactive pod %v/%v in state %v, deletion time %v",
+				p.Namespace, p.Name, p.Status.Phase, p.DeletionTimestamp)
 		}
 	}
 	return result
+}
+
+// SyncAllPodsWithStore lists all pods and inserts them into the given store.
+// Though this function is written in a generic manner, it is only used by the
+// controllers for a specific purpose, to synchronously populate the store
+// with the first batch of pods that would otherwise be sent by the Informer.
+// Doing this avoids more complicated forms of synchronization with the
+// Informer, though it also means that the controller calling this function
+// will receive "OnUpdate" events for all the pods in the store, instead of
+// "OnAdd". This should be ok, since most controllers are level triggered
+// and make decisions based on the contents of the store.
+//
+// TODO: Extend this logic to load arbitrary local state for the controllers
+// instead of just pods.
+func SyncAllPodsWithStore(kubeClient client.Interface, store cache.Store) {
+	var allPods *api.PodList
+	var err error
+	listOptions := api.ListOptions{LabelSelector: labels.Everything(), FieldSelector: fields.Everything()}
+	for {
+		if allPods, err = kubeClient.Pods(api.NamespaceAll).List(listOptions); err != nil {
+			glog.Warningf("Retrying pod list: %v", err)
+			continue
+		}
+		break
+	}
+	pods := []interface{}{}
+	for i := range allPods.Items {
+		p := allPods.Items[i]
+		glog.V(4).Infof("Initializing store with pod %v/%v", p.Namespace, p.Name)
+		pods = append(pods, &p)
+	}
+	store.Replace(pods, allPods.ResourceVersion)
+	return
 }

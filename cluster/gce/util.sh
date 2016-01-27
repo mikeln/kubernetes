@@ -36,10 +36,6 @@ ALLOCATE_NODE_CIDRS=true
 
 KUBE_PROMPT_FOR_UPDATE=y
 KUBE_SKIP_UPDATE=${KUBE_SKIP_UPDATE-"n"}
-# Suffix to append to the staging path used for the server tars. Useful if
-# multiple versions of the server are being used in the same project
-# simultaneously (e.g. on Jenkins).
-KUBE_GCS_STAGING_PATH_SUFFIX=${KUBE_GCS_STAGING_PATH_SUFFIX-""}
 # How long (in seconds) to wait for cluster initialization.
 KUBE_CLUSTER_INITIALIZATION_TIMEOUT=${KUBE_CLUSTER_INITIALIZATION_TIMEOUT:-300}
 
@@ -201,7 +197,7 @@ function upload-server-tars() {
     gsutil mb "${staging_bucket}"
   fi
 
-  local -r staging_path="${staging_bucket}/devel${KUBE_GCS_STAGING_PATH_SUFFIX}"
+  local -r staging_path="${staging_bucket}/${INSTANCE_PREFIX}-devel"
 
   SERVER_BINARY_TAR_HASH=$(sha1sum-file "${SERVER_BINARY_TAR}")
   SALT_TAR_HASH=$(sha1sum-file "${SALT_TAR}")
@@ -696,7 +692,7 @@ function create-nodes-firewall() {
 
   # Wait for last batch of jobs
   kube::util::wait-for-jobs || {
-    echo -e "${color_red}${fail} commands failed.${color_norm}" >&2
+    echo -e "${color_red}Some commands failed.${color_norm}" >&2
   }
 }
 
@@ -1214,7 +1210,7 @@ function kube-push {
   done
 
   kube::util::wait-for-jobs || {
-    echo -e "${color_red}${fail} commands failed.${color_norm}" >&2
+    echo -e "${color_red}Some commands failed.${color_norm}" >&2
   }
 
   # TODO(zmerlynn): Re-create instance-template with the new

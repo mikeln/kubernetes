@@ -63,6 +63,16 @@
 			"Rev": "bf2f8fe7f45e68017086d069498638893feddf64"
 		},
 		{
+			"ImportPath": "github.com/aws/aws-sdk-go/private/protocol/json/jsonutil",
+			"Comment": "v1.0.7",
+			"Rev": "bf2f8fe7f45e68017086d069498638893feddf64"
+		},
+		{
+			"ImportPath": "github.com/aws/aws-sdk-go/private/protocol/jsonrpc",
+			"Comment": "v1.0.7",
+			"Rev": "bf2f8fe7f45e68017086d069498638893feddf64"
+		},
+		{
 			"ImportPath": "github.com/aws/aws-sdk-go/private/protocol/query",
 			"Comment": "v1.0.7",
 			"Rev": "bf2f8fe7f45e68017086d069498638893feddf64"
@@ -94,6 +104,11 @@
 		},
 		{
 			"ImportPath": "github.com/aws/aws-sdk-go/service/ec2",
+			"Comment": "v1.0.7",
+			"Rev": "bf2f8fe7f45e68017086d069498638893feddf64"
+		},
+		{
+			"ImportPath": "github.com/aws/aws-sdk-go/service/ecr",
 			"Comment": "v1.0.7",
 			"Rev": "bf2f8fe7f45e68017086d069498638893feddf64"
 		},
@@ -379,7 +394,7 @@
 		},
 		{
 			"ImportPath": "github.com/docker/spdystream",
-			"Rev": "43bffc458d55aa784be658c9867fbefcfcb7fecf"
+			"Rev": "c33989bcb56748d2473194d11f8ac3fc563688eb"
 		},
 		{
 			"ImportPath": "github.com/elazarl/go-bindata-assetfs",
@@ -746,6 +761,11 @@
 		{
 			"ImportPath": "github.com/mitchellh/mapstructure",
 			"Rev": "740c764bc6149d3f1806231418adb9f52c11bcbf"
+		},
+		{
+			"ImportPath": "github.com/mvdan/xurls",
+			"Comment": "v0.8.0-14-g1b768d7",
+			"Rev": "1b768d7c393abd8e8dda1458385a57becd4b2d4e"
 		},
 		{
 			"ImportPath": "github.com/mxk/go-flowrate/flowrate",

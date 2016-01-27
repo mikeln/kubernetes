@@ -175,6 +175,7 @@ var map_DeploymentSpec = map[string]string{
 	"template":       "Template describes the pods that will be created.",
 	"strategy":       "The deployment strategy to use to replace existing pods with new ones.",
 	"uniqueLabelKey": "Key of the selector that is added to existing RCs (and label key that is added to its pods) to prevent the existing RCs to select new pods (and old pods being selected by new RC). Users can set this to an empty string to indicate that the system should not add any selector and label. If unspecified, system uses DefaultDeploymentUniqueLabelKey(\"deployment.kubernetes.io/podTemplateHash\"). Value of this key is hash of DeploymentSpec.PodTemplateSpec. No label is added if this is set to empty string.",
+	"paused":         "Indicates that the deployment is paused and will not be processed by the deployment controller.",
 }
 
 func (DeploymentSpec) SwaggerDoc() map[string]string {
@@ -182,9 +183,11 @@ func (DeploymentSpec) SwaggerDoc() map[string]string {
 }
 
 var map_DeploymentStatus = map[string]string{
-	"":                "DeploymentStatus is the most recently observed status of the Deployment.",
-	"replicas":        "Total number of non-terminated pods targeted by this deployment (their labels match the selector).",
-	"updatedReplicas": "Total number of non-terminated pods targeted by this deployment that have the desired template spec.",
+	"":                    "DeploymentStatus is the most recently observed status of the Deployment.",
+	"replicas":            "Total number of non-terminated pods targeted by this deployment (their labels match the selector).",
+	"updatedReplicas":     "Total number of non-terminated pods targeted by this deployment that have the desired template spec.",
+	"availableReplicas":   "Total number of available pods (ready for at least minReadySeconds) targeted by this deployment.",
+	"unavailableReplicas": "Total number of unavailable pods targeted by this deployment.",
 }
 
 func (DeploymentStatus) SwaggerDoc() map[string]string {
@@ -381,7 +384,7 @@ func (JobList) SwaggerDoc() map[string]string {
 var map_JobSpec = map[string]string{
 	"":                      "JobSpec describes how the job execution will look like.",
 	"parallelism":           "Parallelism specifies the maximum desired number of pods the job should run at any given time. The actual number of pods running in steady state will be less than this number when ((.spec.completions - .status.successful) < .spec.parallelism), i.e. when the work left to do is less than max parallelism. More info: http://releases.k8s.io/HEAD/docs/user-guide/jobs.md",
-	"completions":           "Completions specifies the desired number of successfully finished pods the job should be run with. Defaults to 1. More info: http://releases.k8s.io/HEAD/docs/user-guide/jobs.md",
+	"completions":           "Completions specifies the desired number of successfully finished pods the job should be run with.  Setting to nil means that the success of any pod signals the success of all pods, and allows parallelism to have any positive value.  Setting to 1 means that parallelism is limited to 1 and the success of that pod signals the success of the job.",
 	"activeDeadlineSeconds": "Optional duration in seconds relative to the startTime that the job may be active before the system tries to terminate it; value must be positive integer",
 	"selector":              "Selector is a label query over pods that should match the pod count. More info: http://releases.k8s.io/HEAD/docs/user-guide/labels.md#label-selectors",
 	"template":              "Template is the object that describes the pod that will be created when executing a job. More info: http://releases.k8s.io/HEAD/docs/user-guide/jobs.md",

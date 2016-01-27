@@ -41,6 +41,10 @@ type gitRepoPlugin struct {
 
 var _ volume.VolumePlugin = &gitRepoPlugin{}
 
+var wrappedVolumeSpec = volume.Spec{
+	Volume: &api.Volume{VolumeSource: api.VolumeSource{EmptyDir: &api.EmptyDirVolumeSource{}}},
+}
+
 const (
 	gitRepoPluginName = "kubernetes.io/git-repo"
 )
@@ -116,35 +120,29 @@ var _ volume.Builder = &gitRepoVolumeBuilder{}
 
 func (b *gitRepoVolumeBuilder) GetAttributes() volume.Attributes {
 	return volume.Attributes{
-		ReadOnly:                    false,
-		Managed:                     true,
-		SupportsOwnershipManagement: false,
-		SupportsSELinux:             true, // xattr change should be okay, TODO: double check
+		ReadOnly:        false,
+		Managed:         true,
+		SupportsSELinux: true, // xattr change should be okay, TODO: double check
 	}
 }
 
 // SetUp creates new directory and clones a git repo.
-func (b *gitRepoVolumeBuilder) SetUp() error {
-	return b.SetUpAt(b.GetPath())
-}
-
-// This is the spec for the volume that this plugin wraps.
-var wrappedVolumeSpec = &volume.Spec{
-	Volume: &api.Volume{VolumeSource: api.VolumeSource{EmptyDir: &api.EmptyDirVolumeSource{}}},
+func (b *gitRepoVolumeBuilder) SetUp(fsGroup *int64) error {
+	return b.SetUpAt(b.GetPath(), fsGroup)
 }
 
 // SetUpAt creates new directory and clones a git repo.
-func (b *gitRepoVolumeBuilder) SetUpAt(dir string) error {
+func (b *gitRepoVolumeBuilder) SetUpAt(dir string, fsGroup *int64) error {
 	if volumeutil.IsReady(b.getMetaDir()) {
 		return nil
 	}
 
 	// Wrap EmptyDir, let it do the setup.
-	wrapped, err := b.plugin.host.NewWrapperBuilder(wrappedVolumeSpec, &b.pod, b.opts)
+	wrapped, err := b.plugin.host.NewWrapperBuilder(b.volName, wrappedVolumeSpec, &b.pod, b.opts)
 	if err != nil {
 		return err
 	}
-	if err := wrapped.SetUpAt(dir); err != nil {
+	if err := wrapped.SetUpAt(dir, fsGroup); err != nil {
 		return err
 	}
 
@@ -218,8 +216,9 @@ func (c *gitRepoVolumeCleaner) TearDown() error {
 
 // TearDownAt simply deletes everything in the directory.
 func (c *gitRepoVolumeCleaner) TearDownAt(dir string) error {
+
 	// Wrap EmptyDir, let it do the teardown.
-	wrapped, err := c.plugin.host.NewWrapperCleaner(wrappedVolumeSpec, c.podUID)
+	wrapped, err := c.plugin.host.NewWrapperCleaner(c.volName, wrappedVolumeSpec, c.podUID)
 	if err != nil {
 		return err
 	}

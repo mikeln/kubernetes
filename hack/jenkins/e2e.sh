@@ -139,7 +139,7 @@ function configure_upgrade_step() {
       E2E_UP="false"
       E2E_TEST="true"
       E2E_DOWN="false"
-      GINKGO_TEST_ARGS="--ginkgo.focus=Cluster\sUpgrade.*upgrade-master --upgrade-target=${new_version}"
+      GINKGO_TEST_ARGS="--ginkgo.focus=\[Feature:Upgrade\].*upgrade-master --upgrade-target=${new_version}"
       ;;
 
     step4)
@@ -168,7 +168,7 @@ function configure_upgrade_step() {
       E2E_UP="false"
       E2E_TEST="true"
       E2E_DOWN="false"
-      GINKGO_TEST_ARGS="--ginkgo.focus=Cluster\sUpgrade.*upgrade-cluster --upgrade-target=${new_version}"
+      GINKGO_TEST_ARGS="--ginkgo.focus=\[Feature:Upgrade\].*upgrade-cluster --upgrade-target=${new_version}"
       ;;
 
     step6)
@@ -439,7 +439,6 @@ case ${JOB_NAME} in
           ${GCE_SLOW_TESTS[@]:+${GCE_SLOW_TESTS[@]}} \
           )"}
     : ${KUBE_GCE_INSTANCE_PREFIX:="e2e-gce-${NODE_NAME}-${EXECUTOR_NUMBER}"}
-    : ${KUBE_GCS_STAGING_PATH_SUFFIX:="-${NODE_NAME}-${EXECUTOR_NUMBER}"}
     : ${PROJECT:="kubernetes-jenkins-pull"}
     : ${ENABLE_DEPLOYMENTS:=true}
     # Override GCE defaults
@@ -804,7 +803,7 @@ case ${JOB_NAME} in
     : ${E2E_UP:="false"}
     : ${E2E_TEST:="true"}
     : ${E2E_DOWN:="false"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=Cluster\sUpgrade.*upgrade-master --upgrade-target=${CURRENT_RELEASE_PUBLISHED_VERSION}"}
+    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=\[Feature:Upgrade\].*upgrade-master --upgrade-target=${CURRENT_RELEASE_PUBLISHED_VERSION}"}
     : ${KUBE_GCE_INSTANCE_PREFIX:="e2e-upgrade-1-0"}
     : ${NUM_NODES:=5}
     : ${KUBE_ENABLE_DEPLOYMENTS:=true}
@@ -841,7 +840,7 @@ case ${JOB_NAME} in
     : ${E2E_UP:="false"}
     : ${E2E_TEST:="true"}
     : ${E2E_DOWN:="false"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=Cluster\sUpgrade.*upgrade-cluster --upgrade-target=${CURRENT_RELEASE_PUBLISHED_VERSION}"}
+    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=\[Feature:Upgrade\].*upgrade-cluster --upgrade-target=${CURRENT_RELEASE_PUBLISHED_VERSION}"}
     : ${KUBE_GCE_INSTANCE_PREFIX:="e2e-upgrade-1-0"}
     : ${NUM_NODES:=5}
     : ${KUBE_ENABLE_DEPLOYMENTS:=true}
@@ -967,7 +966,6 @@ export INSTANCE_PREFIX=${E2E_CLUSTER_NAME}
 export KUBE_GCE_ZONE=${E2E_ZONE}
 export KUBE_GCE_NETWORK=${E2E_NETWORK}
 export KUBE_GCE_INSTANCE_PREFIX=${KUBE_GCE_INSTANCE_PREFIX:-}
-export KUBE_GCS_STAGING_PATH_SUFFIX=${KUBE_GCS_STAGING_PATH_SUFFIX:-}
 export KUBE_GCE_NODE_PROJECT=${KUBE_GCE_NODE_PROJECT:-}
 export KUBE_GCE_NODE_IMAGE=${KUBE_GCE_NODE_IMAGE:-}
 export KUBE_OS_DISTRIBUTION=${KUBE_OS_DISTRIBUTION:-}
