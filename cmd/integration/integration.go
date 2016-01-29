@@ -133,11 +133,11 @@ func startComponents(firstManifestURL, secondManifestURL string) (string, string
 		glog.Fatalf("Failed to connect to etcd")
 	}
 
-	cl := client.NewOrDie(&client.Config{Host: apiServer.URL, GroupVersion: testapi.Default.GroupVersion()})
+	cl := client.NewOrDie(&client.Config{Host: apiServer.URL, ContentConfig: client.ContentConfig{GroupVersion: testapi.Default.GroupVersion()}})
 
 	// TODO: caesarxuchao: hacky way to specify version of Experimental client.
 	// We will fix this by supporting multiple group versions in Config
-	cl.ExtensionsClient = client.NewExtensionsOrDie(&client.Config{Host: apiServer.URL, GroupVersion: testapi.Extensions.GroupVersion()})
+	cl.ExtensionsClient = client.NewExtensionsOrDie(&client.Config{Host: apiServer.URL, ContentConfig: client.ContentConfig{GroupVersion: testapi.Extensions.GroupVersion()}})
 
 	// Master
 	host, port, err := net.SplitHostPort(strings.TrimLeft(apiServer.URL, "http://"))
@@ -293,7 +293,7 @@ func podsOnNodes(c *client.Client, podNamespace string, labelSelector labels.Sel
 		}
 		for i := range pods.Items {
 			pod := pods.Items[i]
-			podString := fmt.Sprintf("%q/%q", pod.Namespace, pod.Name)
+			podString := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
 			glog.Infof("Check whether pod %q exists on node %q", podString, pod.Spec.NodeName)
 			if len(pod.Spec.NodeName) == 0 {
 				glog.Infof("Pod %q is not bound to a host yet", podString)
@@ -354,6 +354,7 @@ func podRunning(c *client.Client, podNamespace string, podName string) wait.Cond
 	return func() (bool, error) {
 		pod, err := c.Pods(podNamespace).Get(podName)
 		if apierrors.IsNotFound(err) {
+			glog.V(2).Infof("Pod %s/%s was not found", podNamespace, podName)
 			return false, nil
 		}
 		if err != nil {
@@ -362,6 +363,7 @@ func podRunning(c *client.Client, podNamespace string, podName string) wait.Cond
 			return false, nil
 		}
 		if pod.Status.Phase != api.PodRunning {
+			glog.V(2).Infof("Pod %s/%s is not running. In phase %q", podNamespace, podName, pod.Status.Phase)
 			return false, nil
 		}
 		return true, nil
@@ -984,10 +986,10 @@ func main() {
 	// Wait for the synchronization threads to come up.
 	time.Sleep(time.Second * 10)
 
-	kubeClient := client.NewOrDie(&client.Config{Host: apiServerURL, GroupVersion: testapi.Default.GroupVersion()})
+	kubeClient := client.NewOrDie(&client.Config{Host: apiServerURL, ContentConfig: client.ContentConfig{GroupVersion: testapi.Default.GroupVersion()}})
 	// TODO: caesarxuchao: hacky way to specify version of Experimental client.
 	// We will fix this by supporting multiple group versions in Config
-	kubeClient.ExtensionsClient = client.NewExtensionsOrDie(&client.Config{Host: apiServerURL, GroupVersion: testapi.Extensions.GroupVersion()})
+	kubeClient.ExtensionsClient = client.NewExtensionsOrDie(&client.Config{Host: apiServerURL, ContentConfig: client.ContentConfig{GroupVersion: testapi.Extensions.GroupVersion()}})
 
 	// Run tests in parallel
 	testFuncs := []testFunc{

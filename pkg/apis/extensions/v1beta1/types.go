@@ -364,7 +364,7 @@ type DaemonSetSpec struct {
 	// that matches the template's node selector (or on every node if no node
 	// selector is specified).
 	// More info: http://releases.k8s.io/HEAD/docs/user-guide/replication-controller.md#pod-template
-	Template *v1.PodTemplateSpec `json:"template,omitempty"`
+	Template v1.PodTemplateSpec `json:"template"`
 
 	// Update strategy to replace existing DaemonSet pods with new pods.
 	UpdateStrategy DaemonSetUpdateStrategy `json:"updateStrategy,omitempty"`
@@ -808,29 +808,6 @@ const (
 	LabelSelectorOpExists       LabelSelectorOperator = "Exists"
 	LabelSelectorOpDoesNotExist LabelSelectorOperator = "DoesNotExist"
 )
-
-// ConfigMap holds configuration data for pods to consume.
-type ConfigMap struct {
-	unversioned.TypeMeta `json:",inline"`
-
-	// Standard object metadata; More info: http://releases.k8s.io/HEAD/docs/devel/api-conventions.md#metadata.
-	v1.ObjectMeta `json:"metadata,omitempty"`
-
-	// Data contains the configuration data.
-	// Each key must be a valid DNS_SUBDOMAIN with an optional leading dot.
-	Data map[string]string `json:"data,omitempty"`
-}
-
-// ConfigMapList is a resource containing a list of ConfigMap objects.
-type ConfigMapList struct {
-	unversioned.TypeMeta `json:",inline"`
-
-	// More info: http://releases.k8s.io/HEAD/docs/devel/api-conventions.md#metadata
-	unversioned.ListMeta `json:"metadata,omitempty"`
-
-	// Items is the list of ConfigMaps.
-	Items []ConfigMap `json:"items,omitempty"`
-}
 
 // ReplicaSet represents the configuration of a ReplicaSet.
 type ReplicaSet struct {

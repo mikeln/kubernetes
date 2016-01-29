@@ -17,7 +17,6 @@ limitations under the License.
 package validation
 
 import (
-	"fmt"
 	"net"
 	"regexp"
 	"strconv"
@@ -165,7 +164,7 @@ func ValidateDaemonSetStatusUpdate(controller, oldController *extensions.DaemonS
 }
 
 // ValidateDaemonSetTemplateUpdate tests that certain fields in the daemon set's pod template are not updated.
-func ValidateDaemonSetTemplateUpdate(podTemplate, oldPodTemplate *api.PodTemplateSpec, fldPath *field.Path) field.ErrorList {
+func ValidateDaemonSetTemplateUpdate(podTemplate, oldPodTemplate api.PodTemplateSpec, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 	podSpec := podTemplate.Spec
 	// podTemplate.Spec is not a pointer, so we can modify NodeSelector and NodeName directly.
@@ -211,20 +210,14 @@ func ValidateDaemonSetUpdateStrategy(strategy *extensions.DaemonSetUpdateStrateg
 func ValidateDaemonSetSpec(spec *extensions.DaemonSetSpec, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	// The order of these checks is important because spec.Template is tested for nil value here
-	// before accessing its labels in the following check.
-	if spec.Template == nil {
-		allErrs = append(allErrs, field.Required(fldPath.Child("template"), ""))
-		return allErrs
-	}
-
 	allErrs = append(allErrs, ValidateLabelSelector(spec.Selector, fldPath.Child("selector"))...)
+
 	selector, err := extensions.LabelSelectorAsSelector(spec.Selector)
 	if err == nil && !selector.Matches(labels.Set(spec.Template.Labels)) {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("template", "metadata", "labels"), spec.Template.Labels, "`selector` does not match template `labels`"))
 	}
 
-	allErrs = append(allErrs, apivalidation.ValidatePodTemplateSpec(spec.Template, fldPath.Child("template"))...)
+	allErrs = append(allErrs, apivalidation.ValidatePodTemplateSpec(&spec.Template, fldPath.Child("template"))...)
 	// Daemons typically run on more than one node, so mark Read-Write persistent disks as invalid.
 	allErrs = append(allErrs, apivalidation.ValidateReadOnlyPersistentDisks(spec.Template.Spec.Volumes, fldPath.Child("template", "spec", "volumes"))...)
 	// RestartPolicy has already been first-order validated as per ValidatePodTemplateSpec().
@@ -626,35 +619,6 @@ func ValidateScale(scale *extensions.Scale) field.ErrorList {
 		allErrs = append(allErrs, field.Invalid(field.NewPath("spec", "replicas"), scale.Spec.Replicas, "must be greater than or equal to 0"))
 	}
 
-	return allErrs
-}
-
-// ValidateConfigMapName can be used to check whether the given ConfigMap name is valid.
-// Prefix indicates this name will be used as part of generation, in which case
-// trailing dashes are allowed.
-func ValidateConfigMapName(name string, prefix bool) (bool, string) {
-	return apivalidation.NameIsDNSSubdomain(name, prefix)
-}
-
-// ValidateConfigMap tests whether required fields in the ConfigMap are set.
-func ValidateConfigMap(cfg *extensions.ConfigMap) field.ErrorList {
-	allErrs := field.ErrorList{}
-	allErrs = append(allErrs, apivalidation.ValidateObjectMeta(&cfg.ObjectMeta, true, ValidateConfigMapName, field.NewPath("metadata"))...)
-
-	for key := range cfg.Data {
-		if !apivalidation.IsSecretKey(key) {
-			allErrs = append(allErrs, field.Invalid(field.NewPath("data").Key(key), key, fmt.Sprintf("must have at most %d characters and match regex %s", validation.DNS1123SubdomainMaxLength, apivalidation.SecretKeyFmt)))
-		}
-	}
-
-	return allErrs
-}
-
-// ValidateConfigMapUpdate tests if required fields in the ConfigMap are set.
-func ValidateConfigMapUpdate(newCfg, oldCfg *extensions.ConfigMap) field.ErrorList {
-	allErrs := field.ErrorList{}
-	allErrs = append(allErrs, apivalidation.ValidateObjectMetaUpdate(&newCfg.ObjectMeta, &oldCfg.ObjectMeta, field.NewPath("metadata"))...)
-	allErrs = append(allErrs, ValidateConfigMap(newCfg)...)
 	return allErrs
 }
 

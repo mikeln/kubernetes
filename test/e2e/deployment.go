@@ -30,7 +30,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("Deployment", func() {
+var _ = Describe("Deployment [Feature:Deployment]", func() {
 	f := NewFramework("deployment")
 
 	It("deployment should create new pods", func() {
@@ -42,7 +42,7 @@ var _ = Describe("Deployment", func() {
 	It("RollingUpdateDeployment should scale up and down in the right order [Flaky]", func() {
 		testRollingUpdateDeploymentEvents(f)
 	})
-	It("RecreateDeployment should delete old pods and create new ones [Flaky]", func() {
+	It("RecreateDeployment should delete old pods and create new ones", func() {
 		testRecreateDeployment(f)
 	})
 	It("deployment should support rollover [Flaky]", func() {

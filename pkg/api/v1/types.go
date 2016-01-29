@@ -1971,7 +1971,7 @@ const (
 
 // NodeCondition contains condition infromation for a node.
 type NodeCondition struct {
-	// Type of node condition, currently only Ready.
+	// Type of node condition.
 	Type NodeConditionType `json:"type"`
 	// Status of the condition, one of True, False, Unknown.
 	Status ConditionStatus `json:"status"`
@@ -2564,6 +2564,29 @@ type SecretList struct {
 	// Items is a list of secret objects.
 	// More info: http://releases.k8s.io/HEAD/docs/user-guide/secrets.md
 	Items []Secret `json:"items"`
+}
+
+// ConfigMap holds configuration data for pods to consume.
+type ConfigMap struct {
+	unversioned.TypeMeta `json:",inline"`
+	// Standard object's metadata.
+	// More info: http://releases.k8s.io/HEAD/docs/devel/api-conventions.md#metadata
+	ObjectMeta `json:"metadata,omitempty"`
+
+	// Data contains the configuration data.
+	// Each key must be a valid DNS_SUBDOMAIN with an optional leading dot.
+	Data map[string]string `json:"data,omitempty"`
+}
+
+// ConfigMapList is a resource containing a list of ConfigMap objects.
+type ConfigMapList struct {
+	unversioned.TypeMeta `json:",inline"`
+
+	// More info: http://releases.k8s.io/HEAD/docs/devel/api-conventions.md#metadata
+	unversioned.ListMeta `json:"metadata,omitempty"`
+
+	// Items is the list of ConfigMaps.
+	Items []ConfigMap `json:"items,omitempty"`
 }
 
 // Type and constants for component health validation.

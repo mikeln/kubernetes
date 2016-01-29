@@ -29,10 +29,8 @@ func addDefaultingFuncs(scheme *runtime.Scheme) {
 			}
 		},
 		func(obj *DaemonSet) {
-			var labels map[string]string
-			if obj.Spec.Template != nil {
-				labels = obj.Spec.Template.Labels
-			}
+			labels := obj.Spec.Template.Labels
+
 			// TODO: support templates defined elsewhere when we support them in the API
 			if labels != nil {
 				if obj.Spec.Selector == nil {
@@ -140,11 +138,6 @@ func addDefaultingFuncs(scheme *runtime.Scheme) {
 			}
 			if obj.Spec.CPUUtilization == nil {
 				obj.Spec.CPUUtilization = &CPUTargetUtilization{TargetPercentage: 80}
-			}
-		},
-		func(obj *ConfigMap) {
-			if obj.Data == nil {
-				obj.Data = make(map[string]string)
 			}
 		},
 		func(obj *ReplicaSet) {

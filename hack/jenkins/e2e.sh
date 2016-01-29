@@ -54,7 +54,6 @@ function join_regex_no_empty() {
 # Assumes globals:
 #   $JOB_NAME
 #   $KUBERNETES_PROVIDER
-#   $GKE_DEFAULT_SKIP_TESTS
 #   $GCE_DEFAULT_SKIP_TESTS
 #   $GCE_FLAKY_TESTS
 #   $GCE_SLOW_TESTS
@@ -87,7 +86,6 @@ function configure_upgrade_step() {
         ${GCE_SLOW_TESTS[@]:+${GCE_SLOW_TESTS[@]}} \
         )"
   local -r gke_test_args="--ginkgo.skip=$(join_regex_allow_empty \
-        ${GKE_DEFAULT_SKIP_TESTS[@]:+${GKE_DEFAULT_SKIP_TESTS[@]}} \
         ${GCE_DEFAULT_SKIP_TESTS[@]:+${GCE_DEFAULT_SKIP_TESTS[@]}} \
         ${GCE_FLAKY_TESTS[@]:+${GCE_FLAKY_TESTS[@]}} \
         ${GCE_SLOW_TESTS[@]:+${GCE_SLOW_TESTS[@]}} \
@@ -267,41 +265,9 @@ CURRENT_RELEASE_PUBLISHED_VERSION="ci/latest-1.1"
 
 # Specialized tests which should be skipped by default for projects.
 GCE_DEFAULT_SKIP_TESTS=(
-    "\[Example\]" # previously in REBOOT_SKIP_TESTS..., dates back before version control (#10078)
     "\[Skipped\]"
     "\[Feature:.+\]"
     )
-
-# PROVIDER SKIPS --------------------------------------
-
-# Tests which cannot be run on GKE, e.g. because they require
-# master ssh access.
-GKE_REQUIRED_SKIP_TESTS=(
-    "Nodes"
-    "Etcd\sFailure"
-    "MasterCerts"
-    "experimental\sresource\susage\stracking" # Expect --max-pods=110
-    "ServiceLoadBalancer" # issue: #16602
-    "Shell"
-    # Alpha features, remove from skip when these move to beta
-    "Daemon\sset"
-    "Deployment"
-    )
-
-# Specialized tests which should be skipped by default for GKE.
-GKE_DEFAULT_SKIP_TESTS=(
-    # Perf test, slow by design
-    "resource\susage\stracking"
-    "${GKE_REQUIRED_SKIP_TESTS[@]}"
-    )
-
-# Tests which cannot be run on AWS.
-AWS_REQUIRED_SKIP_TESTS=(
-    "experimental\sresource\susage\stracking" # Expect --max-pods=110
-    "GCE\sL7\sLoadBalancer\sController" # GCE L7 loadbalancing
-)
-
-# END PROVIDER SKIPS --------------------------------------
 
 # Tests which kills or restarts components and/or nodes.
 DISRUPTIVE_TESTS=(
@@ -337,16 +303,14 @@ GCE_PARALLEL_SKIP_TESTS=(
 # release branches defines relevant jobs for that particular version of
 # Kubernetes.
 case ${JOB_NAME} in
-  # Runs all non-flaky, non-slow tests on GCE, sequentially.
+  # Runs all non-slow, non-serial, non-flaky, tests on GCE in parallel.
   kubernetes-e2e-gce)
     : ${E2E_CLUSTER_NAME:="jenkins-gce-e2e"}
     : ${E2E_PUBLISH_GREEN_VERSION:="true"}
     : ${E2E_NETWORK:="e2e-gce"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.skip=$(join_regex_allow_empty \
-          ${GCE_DEFAULT_SKIP_TESTS[@]:+${GCE_DEFAULT_SKIP_TESTS[@]}} \
-          ${GCE_FLAKY_TESTS[@]:+${GCE_FLAKY_TESTS[@]}} \
-          ${GCE_SLOW_TESTS[@]:+${GCE_SLOW_TESTS[@]}} \
-          )"}
+    # TODO(ihmccreery) remove [Skipped] once tests are relabeled
+    : ${GINKGO_TEST_ARGS:="--ginkgo.skip=\[Slow\]|\[Serial\]|\[Disruptive\]|\[Flaky\]|\[Feature:.+\]|\[Skipped\]"}
+    : ${GINKGO_PARALLEL:="y"}
     : ${KUBE_GCE_INSTANCE_PREFIX="e2e-gce"}
     : ${PROJECT:="k8s-jkns-e2e-gce"}
     : ${ENABLE_DEPLOYMENTS:=true}
@@ -364,7 +328,6 @@ case ${JOB_NAME} in
           ${GCE_DEFAULT_SKIP_TESTS[@]:+${GCE_DEFAULT_SKIP_TESTS[@]}} \
           ${GCE_FLAKY_TESTS[@]:+${GCE_FLAKY_TESTS[@]}} \
           ${GCE_SLOW_TESTS[@]:+${GCE_SLOW_TESTS[@]}} \
-          ${AWS_REQUIRED_SKIP_TESTS[@]:+${AWS_REQUIRED_SKIP_TESTS[@]}} \
 	  )"}
     : ${KUBE_GCE_INSTANCE_PREFIX="e2e-aws"}
     : ${PROJECT:="k8s-jkns-e2e-aws"}
@@ -380,7 +343,7 @@ case ${JOB_NAME} in
   kubernetes-e2e-gce-examples)
     : ${E2E_CLUSTER_NAME:="jenkins-gce-e2e-examples"}
     : ${E2E_NETWORK:="e2e-examples"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=\[Example\]"}
+    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=\[Feature:Example\]"}
     : ${KUBE_GCE_INSTANCE_PREFIX:="e2e-examples"}
     : ${PROJECT:="kubernetes-jenkins"}
     ;;
@@ -389,7 +352,8 @@ case ${JOB_NAME} in
   kubernetes-e2e-gce-autoscaling)
     : ${E2E_CLUSTER_NAME:="jenkins-gce-e2e-autoscaling"}
     : ${E2E_NETWORK:="e2e-autoscaling"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=\[Feature:Autoscaling\]"}
+    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=\[Feature:ClusterSizeAutoscaling\]|\[Feature:InitialResources\] \
+                           --ginkgo.skip=\[Flaky\]"}
     : ${KUBE_GCE_INSTANCE_PREFIX:="e2e-autoscaling"}
     : ${PROJECT:="k8s-jnks-e2e-gce-autoscaling"}
     : ${FAIL_ON_GCP_RESOURCE_LEAK:="true"}
@@ -418,9 +382,10 @@ case ${JOB_NAME} in
   kubernetes-e2e-gce-slow)
     : ${E2E_CLUSTER_NAME:="jenkins-gce-e2e-slow"}
     : ${E2E_NETWORK:="e2e-slow"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=$(join_regex_no_empty \
-          ${GCE_SLOW_TESTS[@]:+${GCE_SLOW_TESTS[@]}} \
-          )"}
+    # TODO(ihmccreery) remove [Skipped] once tetss are relabeled
+    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=\[Slow\] \
+                           --ginkgo.skip=\[Serial\]|\[Disruptive\]|\[Flaky\]|\[Feature:.+\]|\[Skipped\]"}
+    : ${GINKGO_PARALLEL:="y"}
     : ${KUBE_GCE_INSTANCE_PREFIX:="e2e-slow"}
     : ${PROJECT:="k8s-jkns-e2e-gce-slow"}
     : ${FAIL_ON_GCP_RESOURCE_LEAK:="true"}
@@ -445,24 +410,6 @@ case ${JOB_NAME} in
     NUM_NODES=${NUM_NODES_PARALLEL}
     ;;
 
-  # Runs all non-flaky tests on GCE in parallel.
-  kubernetes-e2e-gce-parallel)
-    : ${E2E_CLUSTER_NAME:="jenkins-gce-e2e-parallel"}
-    : ${E2E_NETWORK:="e2e-parallel"}
-    : ${GINKGO_PARALLEL:="y"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.skip=$(join_regex_allow_empty \
-          ${GCE_DEFAULT_SKIP_TESTS[@]:+${GCE_DEFAULT_SKIP_TESTS[@]}} \
-          ${GCE_PARALLEL_SKIP_TESTS[@]:+${GCE_PARALLEL_SKIP_TESTS[@]}} \
-          ${GCE_FLAKY_TESTS[@]:+${GCE_FLAKY_TESTS[@]}} \
-          ${GCE_SLOW_TESTS[@]:+${GCE_SLOW_TESTS[@]}} \
-          )"}
-    : ${KUBE_GCE_INSTANCE_PREFIX:="e2e-test-parallel"}
-    : ${PROJECT:="kubernetes-jenkins"}
-    : ${ENABLE_DEPLOYMENTS:=true}
-    # Override GCE defaults
-    NUM_NODES=${NUM_NODES_PARALLEL}
-    ;;
-
   # Runs all non-flaky tests on AWS in parallel.
   kubernetes-e2e-aws-parallel)
     : ${E2E_CLUSTER_NAME:="jenkins-aws-e2e-parallel"}
@@ -472,7 +419,6 @@ case ${JOB_NAME} in
           ${GCE_DEFAULT_SKIP_TESTS[@]:+${GCE_DEFAULT_SKIP_TESTS[@]}} \
           ${GCE_PARALLEL_SKIP_TESTS[@]:+${GCE_PARALLEL_SKIP_TESTS[@]}} \
           ${GCE_FLAKY_TESTS[@]:+${GCE_FLAKY_TESTS[@]}} \
-          ${AWS_REQUIRED_SKIP_TESTS[@]:+${AWS_REQUIRED_SKIP_TESTS[@]}} \
           )"}
     : ${ENABLE_DEPLOYMENTS:=true}
     # Override AWS defaults.
@@ -497,22 +443,13 @@ case ${JOB_NAME} in
     NUM_NODES=${NUM_NODES_PARALLEL}
     ;;
 
-  # Run the Reboot tests on GCE. (#19681)
-  kubernetes-e2e-gce-reboot)
-    : ${E2E_CLUSTER_NAME:="jenkins-gce-e2e-reboot"}
-    : ${E2E_NETWORK:="e2e-reboot"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=Reboot"}
-    : ${KUBE_GCE_INSTANCE_PREFIX:="e2e-reboot"}
-    : ${PROJECT:="kubernetes-jenkins"}
-    ;;
-
   # Run the [Serial], [Disruptive], and [Feature:Restart] tests on GCE.
   kubernetes-e2e-gce-serial)
     : ${E2E_CLUSTER_NAME:="jenkins-gce-e2e-serial"}
     : ${E2E_NETWORK:="jenkins-gce-e2e-serial"}
     : ${FAIL_ON_GCP_RESOURCE_LEAK:="true"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=\[Serial\]|\[Disruptive\]|\[Feature:Restart\] \
-                           --ginkgo.skip=\[Flaky\]"}
+    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=\[Serial\]|\[Disruptive\] \
+                           --ginkgo.skip=\[Flaky\]|\[Feature:.+\]"}
     : ${KUBE_GCE_INSTANCE_PREFIX:="e2e-serial"}
     : ${PROJECT:="kubernetes-jkns-e2e-gce-serial"}
     ;;
@@ -523,8 +460,8 @@ case ${JOB_NAME} in
     : ${E2E_NETWORK:="jenkins-gke-e2e-serial"}
     : ${E2E_SET_CLUSTER_API_VERSION:=y}
     : ${FAIL_ON_GCP_RESOURCE_LEAK:="true"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=\[Serial\]|\[Disruptive\]|\[Feature:Restart\] \
-                           --ginkgo.skip=\[Flaky\]"}
+    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=\[Serial\]|\[Disruptive\] \
+                           --ginkgo.skip=\[Flaky\]|\[Feature:.+\]"}
     : ${PROJECT:="jenkins-gke-e2e-serial"}
     ;;
 
@@ -626,33 +563,28 @@ case ${JOB_NAME} in
     : ${PROJECT:="kubernetes-jenkins"}
     ;;
 
-  kubernetes-e2e-gke-ci)
+  # Runs all non-slow, non-serial, non-flaky, tests on GKE in parallel.
+  kubernetes-e2e-gke)
     : ${E2E_CLUSTER_NAME:="jkns-gke-e2e-ci"}
     : ${E2E_NETWORK:="e2e-gke-ci"}
     : ${E2E_SET_CLUSTER_API_VERSION:=y}
     : ${PROJECT:="k8s-jkns-e2e-gke-ci"}
     : ${FAIL_ON_GCP_RESOURCE_LEAK:="true"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.skip=$(join_regex_allow_empty \
-          ${GKE_DEFAULT_SKIP_TESTS[@]:+${GKE_DEFAULT_SKIP_TESTS[@]}} \
-          ${GCE_DEFAULT_SKIP_TESTS[@]:+${GCE_DEFAULT_SKIP_TESTS[@]}} \
-          ${GCE_FLAKY_TESTS[@]:+${GCE_FLAKY_TESTS[@]}} \
-          )"}
+    # TODO(ihmccreery) remove [Skipped] once tests are relabeled
+    : ${GINKGO_TEST_ARGS:="--ginkgo.skip=\[Slow\]|\[Serial\]|\[Disruptive\]|\[Flaky\]|\[Feature:.+\]|\[Skipped\]"}
+    : ${GINKGO_PARALLEL:="y"}
     ;;
 
-  # Run the GCE_PARALLEL_SKIP_TESTS on GKE.
-  kubernetes-e2e-gke-ci-reboot)
-    : ${E2E_CLUSTER_NAME:="jkns-gke-e2e-ci-reboot"}
-    : ${E2E_NETWORK:="e2e-gke-ci-reboot"}
+  kubernetes-e2e-gke-slow)
+    : ${E2E_CLUSTER_NAME:="jkns-gke-e2e-slow"}
+    : ${E2E_NETWORK:="e2e-gke-slow"}
     : ${E2E_SET_CLUSTER_API_VERSION:=y}
-    : ${PROJECT:="k8s-jkns-e2e-gke-ci-reboot"}
+    : ${PROJECT:="k8s-jkns-e2e-gke-slow"}
     : ${FAIL_ON_GCP_RESOURCE_LEAK:="true"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=$(join_regex_allow_empty \
-          ${GCE_PARALLEL_SKIP_TESTS[@]:+${GCE_PARALLEL_SKIP_TESTS[@]}} \
-          ) --ginkgo.skip=$(join_regex_no_empty \
-          ${GCE_DEFAULT_SKIP_TESTS[@]:+${GCE_DEFAULT_SKIP_TESTS[@]}} \
-          ${GCE_FLAKY_TESTS[@]:+${GCE_FLAKY_TESTS[@]}} \
-          ${GKE_DEFAULT_SKIP_TESTS[@]:+${GKE_DEFAULT_SKIP_TESTS[@]}} \
-          )"}
+    # TODO(ihmccreery) remove [Skipped] once tetss are relabeled
+    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=\[Slow\] \
+                           --ginkgo.skip=\[Serial\]|\[Disruptive\]|\[Flaky\]|\[Feature:.+\]|\[Skipped\]"}
+    : ${GINKGO_PARALLEL:="y"}
     ;;
 
   kubernetes-e2e-gke-flaky)
@@ -661,9 +593,7 @@ case ${JOB_NAME} in
     : ${E2E_SET_CLUSTER_API_VERSION:=y}
     : ${PROJECT:="k8s-jkns-e2e-gke-ci-flaky"}
     : ${FAIL_ON_GCP_RESOURCE_LEAK:="true"}
-    : ${GINKGO_TEST_ARGS:="--ginkgo.skip=$(join_regex_allow_empty \
-          ${GKE_REQUIRED_SKIP_TESTS[@]:+${GKE_REQUIRED_SKIP_TESTS[@]}}) \
-          --ginkgo.focus=$(join_regex_no_empty \
+    : ${GINKGO_TEST_ARGS:="--ginkgo.focus=$(join_regex_no_empty \
           ${GCE_FLAKY_TESTS[@]:+${GCE_FLAKY_TESTS[@]}} \
           )"}
     ;;
@@ -696,7 +626,6 @@ case ${JOB_NAME} in
     # DISRUPTIVE_TESTS kill/restart components or nodes in the cluster,
     # defeating the purpose of a soak cluster. (#15722)
     : ${GINKGO_TEST_ARGS:="--ginkgo.skip=$(join_regex_allow_empty \
-          ${GKE_REQUIRED_SKIP_TESTS[@]:+${GKE_REQUIRED_SKIP_TESTS[@]}} \
           ${GCE_DEFAULT_SKIP_TESTS[@]:+${GCE_DEFAULT_SKIP_TESTS[@]}} \
           ${GCE_FLAKY_TESTS[@]:+${GCE_FLAKY_TESTS[@]}} \
           ${DISRUPTIVE_TESTS[@]:+${DISRUPTIVE_TESTS[@]}} \

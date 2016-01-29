@@ -45,15 +45,9 @@
         - 'gce-flaky':
             description: 'Run E2E tests on GCE using the latest successful build. Limit to known-flaky tests.'
             timeout: 180
-        - 'gce-parallel':
-            description: 'Run E2E tests using Ginkgo''s parallel test runner on GCE using the latest successful build.'
-            timeout: 120
         - 'gce-parallel-flaky':
             description: 'Run E2E tests using Ginkgo''s parallel test runner on GCE using the latest successful build. Limit to known-flaky tests.'
             timeout: 90
-        - 'gce-reboot':
-            description: 'Run E2E reboot tests on GCE using the latest successful build. The reboot tests are currently flaky and causing other tests to fail, so we quarantine them into this project and dedicated test cluster.'
-            timeout: 300
         - 'gce-scalability':
             description: 'Run scalability E2E tests on GCE using the latest successful build.'
             timeout: 210
@@ -62,6 +56,9 @@
             timeout: 270
         - 'gce-flannel':
             description: 'Run E2E tests on GCE using Flannel and the latest successful build. This suite is quarantined in a dedicated project because Flannel integration is experimental.'
+            timeout: 90
+        - 'gce-examples':
+            description: 'Run e2e examples test on GCE using the latest successful Kubernetes build.'
             timeout: 90
     jobs:
         - 'kubernetes-e2e-{suffix}'
@@ -73,25 +70,11 @@
     branch: 'master'
     emails: '$DEFAULT_RECIPIENTS, cloud-kubernetes-alerts@google.com'
     suffix:
-        - 'gke-ci':
-            description: |
-                Run e2e tests using the following config:<br>
-                - provider: GKE<br>
-                - apiary: staging<br>
-                - borg job: test<br>
-                - client (kubectl): ci/latest.txt<br>
-                - cluster (k8s): ci/latest.txt<br>
-                - tests: ci/latest.txt
+        - 'gke':
+            description: Runs all non-slow, non-serial, non-flaky, tests on GKE in parallel (against GKE test endpoint)
             timeout: 300
-        - 'gke-ci-reboot':
-            description: |
-                Run e2e tests using the following config:<br>
-                - provider: GKE<br>
-                - apiary: staging<br>
-                - borg job: test<br>
-                - client (kubectl): ci/latest.txt<br>
-                - cluster (k8s): ci/latest.txt<br>
-                - tests: ci/latest.txt
+        - 'gke-slow':
+            description: 'Run slow E2E tests on GKE using the latest successful build.'
             timeout: 300
         - 'gke-flaky':
             description: |

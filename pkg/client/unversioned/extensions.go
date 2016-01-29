@@ -34,7 +34,7 @@ type ExtensionsInterface interface {
 	JobsNamespacer
 	IngressNamespacer
 	ThirdPartyResourceNamespacer
-	ConfigMapsNamespacer
+	ReplicaSetsNamespacer
 }
 
 // ExtensionsClient is used to interact with experimental Kubernetes features.
@@ -68,12 +68,12 @@ func (c *ExtensionsClient) Ingress(namespace string) IngressInterface {
 	return newIngress(c, namespace)
 }
 
-func (c *ExtensionsClient) ConfigMaps(namespace string) ConfigMapsInterface {
-	return newConfigMaps(c, namespace)
-}
-
 func (c *ExtensionsClient) ThirdPartyResources(namespace string) ThirdPartyResourceInterface {
 	return newThirdPartyResources(c, namespace)
+}
+
+func (c *ExtensionsClient) ReplicaSets(namespace string) ReplicaSetInterface {
+	return newReplicaSets(c, namespace)
 }
 
 // NewExtensions creates a new ExtensionsClient for the given config. This client
