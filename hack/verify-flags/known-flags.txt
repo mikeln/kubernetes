@@ -45,8 +45,10 @@ cluster-dns
 cluster-domain
 cluster-name
 cluster-tag
+concurrent-daemonset-controller-syncs
 concurrent-deployment-syncs
 concurrent-endpoint-syncs
+concurrent-job-syncs
 concurrent-resource-quota-syncs
 config-sync-period
 configure-cbr0
@@ -84,12 +86,14 @@ dry-run
 duration-sec
 e2e-output-dir
 e2e-verify-service-account
+enable-custom-metrics
 enable-debugging-handlers
 enable-hostpath-provisioner
 enable-server
 etcd-config
 etcd-mutation-timeout
 etcd-prefix
+etcd-quorum-read
 etcd-server
 etcd-servers
 etcd-servers-overrides
@@ -111,6 +115,7 @@ file-suffix
 file_content_in_loop
 forward-services
 framework-name
+framework-store-uri
 framework-weburi
 from-file
 from-literal
@@ -274,6 +279,7 @@ pv-recycler-minimum-timeout-hostpath
 pv-recycler-minimum-timeout-nfs
 pv-recycler-pod-template-filepath-hostpath
 pv-recycler-pod-template-filepath-nfs
+pv-recycler-maximum-retry
 pv-recycler-timeout-increment-hostpath
 pvclaimbinder-sync-period
 read-only-port
@@ -321,6 +327,7 @@ service-overrides
 service-sync-period
 session-affinity
 show-all
+show-labels
 shutdown-fd
 shutdown-fifo
 since-seconds
@@ -345,6 +352,7 @@ tcp-services
 terminated-pod-gc-threshold
 tls-cert-file
 tls-private-key-file
+to-version
 token-auth-file
 ttl-secs
 type-src
@@ -369,3 +377,4 @@ leader-elect
 leader-elect-lease-duration
 leader-elect-renew-deadline
 leader-elect-retry-period
+watch-cache-sizes

@@ -16,7 +16,11 @@ limitations under the License.
 
 package componentconfig
 
-import "k8s.io/kubernetes/pkg/api/unversioned"
+import (
+	"k8s.io/kubernetes/pkg/api/unversioned"
+
+	"github.com/spf13/pflag"
+)
 
 type KubeProxyConfiguration struct {
 	unversioned.TypeMeta
@@ -63,9 +67,9 @@ type KubeProxyConfiguration struct {
 }
 
 // Currently two modes of proxying are available: 'userspace' (older, stable) or 'iptables'
-// (experimental). If blank, look at the Node object on the Kubernetes API and respect the
+// (newer, faster). If blank, look at the Node object on the Kubernetes API and respect the
 // 'net.experimental.kubernetes.io/proxy-mode' annotation if provided.  Otherwise use the
-// best-available proxy (currently userspace, but may change in future versions).  If the
+// best-available proxy (currently iptables, but may change in future versions).  If the
 // iptables proxy is selected, regardless of how, but the system's kernel or iptables
 // versions are insufficient, this always falls back to the userspace proxy.
 type ProxyMode string
@@ -288,6 +292,33 @@ type KubeletConfiguration struct {
 	NodeLabels map[string]string `json:"nodeLabels"`
 	// nonMasqueradeCIDR configures masquerading: traffic to IPs outside this range will use IP masquerade.
 	NonMasqueradeCIDR string `json:"nonMasqueradeCIDR"`
+	// enable gathering custom metrics.
+	EnableCustomMetrics bool `json:"enableCustomMetrics"`
+}
+
+type KubeSchedulerConfiguration struct {
+	unversioned.TypeMeta
+
+	// port is the port that the scheduler's http service runs on.
+	Port int `json:"port"`
+	// address is the IP address to serve on.
+	Address string `json:"address"`
+	// algorithmProvider is the scheduling algorithm provider to use.
+	AlgorithmProvider string `json:"algorithmProvider"`
+	// policyConfigFile is the filepath to the scheduler policy configuration.
+	PolicyConfigFile string `json:"policyConfigFile"`
+	// enableProfiling enables profiling via web interface.
+	EnableProfiling bool `json:"enableProfiling"`
+	// kubeAPIQPS is the QPS to use while talking with kubernetes apiserver.
+	KubeAPIQPS float32 `json:"kubeAPIQPS"`
+	// kubeAPIBurst is the QPS burst to use while talking with kubernetes apiserver.
+	KubeAPIBurst int `json:"kubeAPIBurst"`
+	// schedulerName is name of the scheduler, used to select which pods
+	// will be processed by this scheduler, based on pod's annotation with
+	// key 'scheduler.alpha.kubernetes.io/name'.
+	SchedulerName string `json:"schedulerName"`
+	// leaderElection defines the configuration of leader election client.
+	LeaderElection LeaderElectionConfiguration `json:"leaderElection"`
 }
 
 // LeaderElectionConfiguration defines the configuration of leader election
@@ -313,4 +344,25 @@ type LeaderElectionConfiguration struct {
 	// acquisition and renewal of a leadership. This is only applicable if
 	// leader election is enabled.
 	RetryPeriod unversioned.Duration `json:"retryPeriod"`
+}
+
+// AddFlags binds the common LeaderElectionCLIConfig flags to a flagset
+func (l *LeaderElectionConfiguration) AddFlags(fs *pflag.FlagSet) {
+	fs.BoolVar(&l.LeaderElect, "leader-elect", l.LeaderElect, ""+
+		"Start a leader election client and gain leadership before "+
+		"executing the main loop. Enable this when running replicated "+
+		"components for high availability.")
+	fs.DurationVar(&l.LeaseDuration.Duration, "leader-elect-lease-duration", l.LeaseDuration.Duration, ""+
+		"The duration that non-leader candidates will wait after observing a leadership "+
+		"renewal until attempting to acquire leadership of a led but unrenewed leader "+
+		"slot. This is effectively the maximum duration that a leader can be stopped "+
+		"before it is replaced by another candidate. This is only applicable if leader "+
+		"election is enabled.")
+	fs.DurationVar(&l.RenewDeadline.Duration, "leader-elect-renew-deadline", l.RenewDeadline.Duration, ""+
+		"The interval between attempts by the acting master to renew a leadership slot "+
+		"before it stops leading. This must be less than or equal to the lease duration. "+
+		"This is only applicable if leader election is enabled.")
+	fs.DurationVar(&l.RetryPeriod.Duration, "leader-elect-retry-period", l.RetryPeriod.Duration, ""+
+		"The duration the clients should wait between attempting acquisition and renewal "+
+		"of a leadership. This is only applicable if leader election is enabled.")
 }

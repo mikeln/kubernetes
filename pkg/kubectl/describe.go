@@ -32,6 +32,7 @@ import (
 	"k8s.io/kubernetes/pkg/api/resource"
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/apis/extensions"
+	clientset "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_2"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/fieldpath"
 	"k8s.io/kubernetes/pkg/fields"
@@ -88,8 +89,8 @@ func describerMap(c *client.Client) map[unversioned.GroupKind]Describer {
 
 		extensions.Kind("HorizontalPodAutoscaler"): &HorizontalPodAutoscalerDescriber{c},
 		extensions.Kind("DaemonSet"):               &DaemonSetDescriber{c},
+		extensions.Kind("Deployment"):              &DeploymentDescriber{clientset.FromUnversionedClient(c)},
 		extensions.Kind("Job"):                     &JobDescriber{c},
-		extensions.Kind("Deployment"):              &DeploymentDescriber{c},
 		extensions.Kind("Ingress"):                 &IngressDescriber{c},
 	}
 
@@ -884,6 +885,20 @@ func describeReplicationController(controller *api.ReplicationController, events
 	})
 }
 
+func DescribePodTemplate(template *api.PodTemplateSpec) (string, error) {
+	return tabbedString(func(out io.Writer) error {
+		if template == nil {
+			fmt.Fprintf(out, "<no template>")
+			return nil
+		}
+		fmt.Fprintf(out, "Labels:\t%s\n", labels.FormatLabels(template.Labels))
+		fmt.Fprintf(out, "Annotations:\t%s\n", labels.FormatLabels(template.Annotations))
+		fmt.Fprintf(out, "Image(s):\t%s\n", makeImageList(&template.Spec))
+		describeVolumes(template.Spec.Volumes, out)
+		return nil
+	})
+}
+
 // JobDescriber generates information about a job and the pods it has created.
 type JobDescriber struct {
 	client *client.Client
@@ -905,7 +920,7 @@ func describeJob(job *extensions.Job, events *api.EventList) (string, error) {
 		fmt.Fprintf(out, "Name:\t%s\n", job.Name)
 		fmt.Fprintf(out, "Namespace:\t%s\n", job.Namespace)
 		fmt.Fprintf(out, "Image(s):\t%s\n", makeImageList(&job.Spec.Template.Spec))
-		selector, _ := extensions.LabelSelectorAsSelector(job.Spec.Selector)
+		selector, _ := unversioned.LabelSelectorAsSelector(job.Spec.Selector)
 		fmt.Fprintf(out, "Selector:\t%s\n", selector)
 		fmt.Fprintf(out, "Parallelism:\t%d\n", *job.Spec.Parallelism)
 		if job.Spec.Completions != nil {
@@ -943,7 +958,7 @@ func (d *DaemonSetDescriber) Describe(namespace, name string) (string, error) {
 		return "", err
 	}
 
-	selector, err := extensions.LabelSelectorAsSelector(daemon.Spec.Selector)
+	selector, err := unversioned.LabelSelectorAsSelector(daemon.Spec.Selector)
 	if err != nil {
 		return "", err
 	}
@@ -961,7 +976,7 @@ func describeDaemonSet(daemon *extensions.DaemonSet, events *api.EventList, runn
 	return tabbedString(func(out io.Writer) error {
 		fmt.Fprintf(out, "Name:\t%s\n", daemon.Name)
 		fmt.Fprintf(out, "Image(s):\t%s\n", makeImageList(&daemon.Spec.Template.Spec))
-		selector, err := extensions.LabelSelectorAsSelector(daemon.Spec.Selector)
+		selector, err := unversioned.LabelSelectorAsSelector(daemon.Spec.Selector)
 		if err != nil {
 			// this shouldn't happen if LabelSelector passed validation
 			return err
@@ -1573,7 +1588,7 @@ func DescribeEvents(el *api.EventList, w io.Writer) {
 
 // DeploymentDescriber generates information about a deployment.
 type DeploymentDescriber struct {
-	client.Interface
+	clientset.Interface
 }
 
 func (dd *DeploymentDescriber) Describe(namespace, name string) (string, error) {
@@ -1589,11 +1604,12 @@ func (dd *DeploymentDescriber) Describe(namespace, name string) (string, error) 
 		fmt.Fprintf(out, "Selector:\t%s\n", labels.FormatLabels(d.Spec.Selector))
 		fmt.Fprintf(out, "Replicas:\t%d updated | %d total | %d available | %d unavailable\n", d.Status.UpdatedReplicas, d.Spec.Replicas, d.Status.AvailableReplicas, d.Status.UnavailableReplicas)
 		fmt.Fprintf(out, "StrategyType:\t%s\n", d.Spec.Strategy.Type)
+		fmt.Fprintf(out, "MinReadySeconds:\t%s\n", d.Spec.MinReadySeconds)
 		if d.Spec.Strategy.RollingUpdate != nil {
 			ru := d.Spec.Strategy.RollingUpdate
-			fmt.Fprintf(out, "RollingUpdateStrategy:\t%s max unavailable, %s max surge, %d min ready seconds\n", ru.MaxUnavailable.String(), ru.MaxSurge.String(), ru.MinReadySeconds)
+			fmt.Fprintf(out, "RollingUpdateStrategy:\t%s max unavailable, %s max surge\n", ru.MaxUnavailable.String(), ru.MaxSurge.String())
 		}
-		oldRCs, err := deploymentutil.GetOldRCs(*d, dd)
+		oldRCs, _, err := deploymentutil.GetOldRCs(*d, dd)
 		if err == nil {
 			fmt.Fprintf(out, "OldReplicationControllers:\t%s\n", printReplicationControllersByLabels(oldRCs))
 		}
@@ -1605,7 +1621,7 @@ func (dd *DeploymentDescriber) Describe(namespace, name string) (string, error) 
 			}
 			fmt.Fprintf(out, "NewReplicationController:\t%s\n", printReplicationControllersByLabels(newRCs))
 		}
-		events, err := dd.Events(namespace).Search(d)
+		events, err := dd.Core().Events(namespace).Search(d)
 		if err == nil && events != nil {
 			DescribeEvents(events, out)
 		}
@@ -1629,7 +1645,7 @@ func getDaemonSetsForLabels(c client.DaemonSetInterface, labelsToMatch labels.La
 	// Find the ones that match labelsToMatch.
 	var matchingDaemonSets []extensions.DaemonSet
 	for _, ds := range dss.Items {
-		selector, err := extensions.LabelSelectorAsSelector(ds.Spec.Selector)
+		selector, err := unversioned.LabelSelectorAsSelector(ds.Spec.Selector)
 		if err != nil {
 			// this should never happen if the DaemonSet passed validation
 			return nil, err

@@ -115,6 +115,7 @@ func deepCopy_v1_CephFSVolumeSource(in CephFSVolumeSource, out *CephFSVolumeSour
 	} else {
 		out.Monitors = nil
 	}
+	out.Path = in.Path
 	out.User = in.User
 	out.SecretFile = in.SecretFile
 	if in.SecretRef != nil {
@@ -748,6 +749,22 @@ func deepCopy_v1_HTTPGetAction(in HTTPGetAction, out *HTTPGetAction, c *conversi
 	}
 	out.Host = in.Host
 	out.Scheme = in.Scheme
+	if in.HTTPHeaders != nil {
+		out.HTTPHeaders = make([]HTTPHeader, len(in.HTTPHeaders))
+		for i := range in.HTTPHeaders {
+			if err := deepCopy_v1_HTTPHeader(in.HTTPHeaders[i], &out.HTTPHeaders[i], c); err != nil {
+				return err
+			}
+		}
+	} else {
+		out.HTTPHeaders = nil
+	}
+	return nil
+}
+
+func deepCopy_v1_HTTPHeader(in HTTPHeader, out *HTTPHeader, c *conversion.Cloner) error {
+	out.Name = in.Name
+	out.Value = in.Value
 	return nil
 }
 
@@ -2575,6 +2592,7 @@ func init() {
 		deepCopy_v1_GitRepoVolumeSource,
 		deepCopy_v1_GlusterfsVolumeSource,
 		deepCopy_v1_HTTPGetAction,
+		deepCopy_v1_HTTPHeader,
 		deepCopy_v1_Handler,
 		deepCopy_v1_HostPathVolumeSource,
 		deepCopy_v1_ISCSIVolumeSource,

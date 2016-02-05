@@ -40,12 +40,15 @@ import (
 	"k8s.io/kubernetes/pkg/apimachinery/registered"
 	"k8s.io/kubernetes/pkg/apis/extensions"
 	"k8s.io/kubernetes/pkg/client/cache"
+	clientset "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_2"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
 	clientcmdapi "k8s.io/kubernetes/pkg/client/unversioned/clientcmd/api"
 	"k8s.io/kubernetes/pkg/cloudprovider"
+	gcecloud "k8s.io/kubernetes/pkg/cloudprovider/providers/gce"
 	"k8s.io/kubernetes/pkg/fields"
 	"k8s.io/kubernetes/pkg/kubectl"
+	"k8s.io/kubernetes/pkg/kubelet/util/format"
 	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/util"
@@ -249,16 +252,24 @@ func nowStamp() string {
 	return time.Now().Format(time.StampMilli)
 }
 
-func Logf(format string, a ...interface{}) {
-	fmt.Fprintf(GinkgoWriter, nowStamp()+": INFO: "+format+"\n", a...)
+func logf(level string, format string, args ...interface{}) {
+	fmt.Fprintf(GinkgoWriter, nowStamp()+": "+level+": "+format+"\n", args...)
 }
 
-func Failf(format string, a ...interface{}) {
-	Fail(nowStamp()+": "+fmt.Sprintf(format, a...), 1)
+func Logf(format string, args ...interface{}) {
+	logf("INFO", format, args...)
+}
+
+func Failf(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	logf("FAIL", msg)
+	Fail(nowStamp()+": "+msg, 1)
 }
 
 func Skipf(format string, args ...interface{}) {
-	Skip(nowStamp() + ": " + fmt.Sprintf(format, args...))
+	msg := fmt.Sprintf(format, args...)
+	logf("SKIP", msg)
+	Skip(nowStamp() + ": " + msg)
 }
 
 func SkipUnlessNodeCountIsAtLeast(minNodeCount int) {
@@ -286,6 +297,16 @@ func providerIs(providers ...string) bool {
 		}
 	}
 	return false
+}
+
+func SkipUnlessServerVersionGTE(v semver.Version, c client.ServerVersionInterface) {
+	gte, err := serverVersionGTE(v, c)
+	if err != nil {
+		Failf("Failed to get server version: %v", err)
+	}
+	if !gte {
+		Skipf("Not supported for server versions before %q", v)
+	}
 }
 
 // providersWithSSH are those providers where each node is accessible with SSH
@@ -351,6 +372,16 @@ func podRunningReady(p *api.Pod) (bool, error) {
 	if !podReady(p) {
 		return false, fmt.Errorf("pod '%s' on '%s' didn't have condition {%v %v}; conditions: %v",
 			p.ObjectMeta.Name, p.Spec.NodeName, api.PodReady, api.ConditionTrue, p.Status.Conditions)
+	}
+	return true, nil
+}
+
+// podNotReady checks whether pod p's has a ready condition of status false.
+func podNotReady(p *api.Pod) (bool, error) {
+	// Check the ready condition is false.
+	if podReady(p) {
+		return false, fmt.Errorf("pod '%s' on '%s' didn't have condition {%v %v}; conditions: %v",
+			p.ObjectMeta.Name, p.Spec.NodeName, api.PodReady, api.ConditionFalse, p.Status.Conditions)
 	}
 	return true, nil
 }
@@ -546,6 +577,33 @@ func waitForPodCondition(c *client.Client, ns, podName, desc string, timeout tim
 	return fmt.Errorf("gave up waiting for pod '%s' to be '%s' after %v", podName, desc, timeout)
 }
 
+// waitForMatchPodsCondition finds match pods based on the input ListOptions.
+// waits and checks if all match pods are in the given podCondition
+func waitForMatchPodsCondition(c *client.Client, opts api.ListOptions, desc string, timeout time.Duration, condition podCondition) error {
+	Logf("Waiting up to %v for matching pods' status to be %s", timeout, desc)
+	for start := time.Now(); time.Since(start) < timeout; time.Sleep(poll) {
+		pods, err := c.Pods(api.NamespaceAll).List(opts)
+		if err != nil {
+			return err
+		}
+		conditionNotMatch := []string{}
+		for _, pod := range pods.Items {
+			done, err := condition(&pod)
+			if done && err != nil {
+				return fmt.Errorf("Unexpected error: %v", err)
+			}
+			if !done {
+				conditionNotMatch = append(conditionNotMatch, format.Pod(&pod))
+			}
+		}
+		if len(conditionNotMatch) <= 0 {
+			return err
+		}
+		Logf("%d pods are not %s", len(conditionNotMatch), desc)
+	}
+	return fmt.Errorf("gave up waiting for matching pods to be '%s' after %v", desc, timeout)
+}
+
 // waitForDefaultServiceAccountInNamespace waits for the default service account to be provisioned
 // the default service account is what is associated with pods when they do not specify a service account
 // as a result, pods are not able to be provisioned in a namespace until the service account is provisioned
@@ -694,13 +752,13 @@ func deleteNS(c *client.Client, namespace string, timeout time.Duration) error {
 	return nil
 }
 
-// Waits default ammount of time (podStartTimeout) for the specified pod to become running.
+// Waits default amount of time (podStartTimeout) for the specified pod to become running.
 // Returns an error if timeout occurs first, or pod goes in to failed state.
 func waitForPodRunningInNamespace(c *client.Client, podName string, namespace string) error {
 	return waitTimeoutForPodRunningInNamespace(c, podName, namespace, podStartTimeout)
 }
 
-// Waits an extended ammount of time (slowPodStartTimeout) for the specified pod to become running.
+// Waits an extended amount of time (slowPodStartTimeout) for the specified pod to become running.
 // Returns an error if timeout occurs first, or pod goes in to failed state.
 func waitForPodRunningInNamespaceSlow(c *client.Client, podName string, namespace string) error {
 	return waitTimeoutForPodRunningInNamespace(c, podName, namespace, slowPodStartTimeout)
@@ -896,8 +954,9 @@ func waitForEndpoint(c *client.Client, ns, name string) error {
 	return fmt.Errorf("Failed to get entpoints for %s/%s", ns, name)
 }
 
-// Context for checking pods responses by issuing GETs to them and verifying if the answer with pod name.
-type podResponseChecker struct {
+// Context for checking pods responses by issuing GETs to them (via the API
+// proxy) and verifying that they answer with ther own pod name.
+type podProxyResponseChecker struct {
 	c              *client.Client
 	ns             string
 	label          labels.Selector
@@ -906,8 +965,9 @@ type podResponseChecker struct {
 	pods           *api.PodList
 }
 
-// checkAllResponses issues GETs to all pods in the context and verify they reply with pod name.
-func (r podResponseChecker) checkAllResponses() (done bool, err error) {
+// checkAllResponses issues GETs to all pods in the context and verify they
+// reply with their own pod name.
+func (r podProxyResponseChecker) checkAllResponses() (done bool, err error) {
 	successes := 0
 	options := api.ListOptions{LabelSelector: r.label}
 	currentPods, err := r.c.Pods(r.ns).List(options)
@@ -992,7 +1052,7 @@ func serverVersionGTE(v semver.Version, c client.ServerVersionInterface) (bool, 
 func podsResponding(c *client.Client, ns, name string, wantName bool, pods *api.PodList) error {
 	By("trying to dial each unique pod")
 	label := labels.SelectorFromSet(labels.Set(map[string]string{"name": name}))
-	return wait.PollImmediate(poll, podRespondingTimeout, podResponseChecker{c, ns, label, name, wantName, pods}.checkAllResponses)
+	return wait.PollImmediate(poll, podRespondingTimeout, podProxyResponseChecker{c, ns, label, name, wantName, pods}.checkAllResponses)
 }
 
 func serviceResponding(c *client.Client, ns, name string) error {
@@ -1927,14 +1987,14 @@ func waitForRCPodsGone(c *client.Client, rc *api.ReplicationController) error {
 
 // Waits for the deployment to reach desired state.
 // Returns an error if minAvailable or maxCreated is broken at any times.
-func waitForDeploymentStatus(c *client.Client, ns, deploymentName string, desiredUpdatedReplicas, minAvailable, maxCreated, minReadySeconds int) error {
+func waitForDeploymentStatus(c clientset.Interface, ns, deploymentName string, desiredUpdatedReplicas, minAvailable, maxCreated, minReadySeconds int) error {
 	return wait.Poll(poll, 5*time.Minute, func() (bool, error) {
 
-		deployment, err := c.Deployments(ns).Get(deploymentName)
+		deployment, err := c.Extensions().Deployments(ns).Get(deploymentName)
 		if err != nil {
 			return false, err
 		}
-		oldRCs, err := deploymentutil.GetOldRCs(*deployment, c)
+		oldRCs, _, err := deploymentutil.GetOldRCs(*deployment, c)
 		if err != nil {
 			return false, err
 		}
@@ -1975,6 +2035,22 @@ func waitForDeploymentStatus(c *client.Client, ns, deploymentName string, desire
 			return true, nil
 		}
 		return false, nil
+	})
+}
+
+// Waits for the deployment to clean up old rcs.
+func waitForDeploymentOldRCsNum(c *clientset.Clientset, ns, deploymentName string, desiredRCNum int) error {
+	return wait.Poll(poll, 5*time.Minute, func() (bool, error) {
+
+		deployment, err := c.Extensions().Deployments(ns).Get(deploymentName)
+		if err != nil {
+			return false, err
+		}
+		oldRCs, _, err := deploymentutil.GetOldRCs(*deployment, c)
+		if err != nil {
+			return false, err
+		}
+		return len(oldRCs) == desiredRCNum, nil
 	})
 }
 
@@ -2272,7 +2348,7 @@ func getSigner(provider string) (ssh.Signer, error) {
 // in namespace ns are running and ready, using c and waiting at most timeout.
 func checkPodsRunningReady(c *client.Client, ns string, podNames []string, timeout time.Duration) bool {
 	np, desc := len(podNames), "running and ready"
-	Logf("Waiting up to %v for the following %d pods to be %s: %s", timeout, np, desc, podNames)
+	Logf("Waiting up to %v for %d pods to be %s: %s", timeout, np, desc, podNames)
 	result := make(chan bool, len(podNames))
 	for ix := range podNames {
 		// Launch off pod readiness checkers.
@@ -2733,4 +2809,41 @@ func getPodLogsInternal(c *client.Client, namespace, podName, containerName stri
 		return "", fmt.Errorf("Fetched log contains \"Internal Error\": %q.", string(logs))
 	}
 	return string(logs), err
+}
+
+// EnsureLoadBalancerResourcesDeleted ensures that cloud load balancer resources that were created
+// are actually cleaned up.  Currently only implemented for GCE/GKE.
+func EnsureLoadBalancerResourcesDeleted(ip, portRange string) error {
+	if testContext.Provider == "gce" || testContext.Provider == "gke" {
+		return ensureGCELoadBalancerResourcesDeleted(ip, portRange)
+	}
+	return nil
+}
+
+func ensureGCELoadBalancerResourcesDeleted(ip, portRange string) error {
+	gceCloud, ok := testContext.CloudConfig.Provider.(*gcecloud.GCECloud)
+	if !ok {
+		return fmt.Errorf("failed to convert CloudConfig.Provider to GCECloud: %#v", testContext.CloudConfig.Provider)
+	}
+	project := testContext.CloudConfig.ProjectID
+	region, err := gcecloud.GetGCERegion(testContext.CloudConfig.Zone)
+	if err != nil {
+		return fmt.Errorf("could not get region for zone %q: %v", testContext.CloudConfig.Zone, err)
+	}
+
+	return wait.Poll(10*time.Second, 5*time.Minute, func() (bool, error) {
+		service := gceCloud.GetComputeService()
+		list, err := service.ForwardingRules.List(project, region).Do()
+		if err != nil {
+			return false, err
+		}
+		for ix := range list.Items {
+			item := list.Items[ix]
+			if item.PortRange == portRange && item.IPAddress == ip {
+				Logf("found a load balancer: %v", item)
+				return false, nil
+			}
+		}
+		return true, nil
+	})
 }

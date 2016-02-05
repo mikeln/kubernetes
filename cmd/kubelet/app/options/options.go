@@ -73,10 +73,11 @@ func NewKubeletServer() *KubeletServer {
 			CgroupRoot:                  "",
 			ConfigureCBR0:               false,
 			ContainerRuntime:            "docker",
-			CPUCFSQuota:                 false,
+			CPUCFSQuota:                 true,
 			DockerExecHandlerName:       "native",
 			EventBurst:                  10,
 			EventRecordQPS:              5.0,
+			EnableCustomMetrics:         false,
 			EnableDebuggingHandlers:     true,
 			EnableServer:                true,
 			FileCheckFrequency:          unversioned.Duration{20 * time.Second},
@@ -114,7 +115,7 @@ func NewKubeletServer() *KubeletServer {
 			RktStage1Image:                 "",
 			RootDirectory:                  defaultRootDir,
 			SerializeImagePulls:            true,
-			StreamingConnectionIdleTimeout: unversioned.Duration{5 * time.Minute},
+			StreamingConnectionIdleTimeout: unversioned.Duration{4 * time.Hour},
 			SyncFrequency:                  unversioned.Duration{1 * time.Minute},
 			SystemContainer:                "",
 			ReconcileCIDR:                  true,
@@ -174,7 +175,7 @@ func (s *KubeletServer) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&s.ClusterDomain, "cluster-domain", s.ClusterDomain, "Domain for this cluster.  If set, kubelet will configure all containers to search this domain in addition to the host's search domains")
 	fs.StringVar(&s.MasterServiceNamespace, "master-service-namespace", s.MasterServiceNamespace, "The namespace from which the kubernetes master services should be injected into pods")
 	fs.StringVar(&s.ClusterDNS, "cluster-dns", s.ClusterDNS, "IP address for a cluster DNS server.  If set, kubelet will configure all containers to use this for DNS resolution in addition to the host's DNS servers")
-	fs.DurationVar(&s.StreamingConnectionIdleTimeout.Duration, "streaming-connection-idle-timeout", s.StreamingConnectionIdleTimeout.Duration, "Maximum time a streaming connection can be idle before the connection is automatically closed.  Example: '5m'")
+	fs.DurationVar(&s.StreamingConnectionIdleTimeout.Duration, "streaming-connection-idle-timeout", s.StreamingConnectionIdleTimeout.Duration, "Maximum time a streaming connection can be idle before the connection is automatically closed. 0 indicates no timeout. Example: '5m'")
 	fs.DurationVar(&s.NodeStatusUpdateFrequency.Duration, "node-status-update-frequency", s.NodeStatusUpdateFrequency.Duration, "Specifies how often kubelet posts node status to master. Note: be cautious when changing the constant, it must work with nodeMonitorGracePeriod in nodecontroller. Default: 10s")
 	bindableNodeLabels := util.ConfigurationMap(s.NodeLabels)
 	fs.Var(&bindableNodeLabels, "node-labels", "<Warning: Alpha feature> Labels to add when registering the node in the cluster.  Labels must are key=value pairs seperated by ','.")
@@ -214,4 +215,5 @@ func (s *KubeletServer) AddFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&s.ExperimentalFlannelOverlay, "experimental-flannel-overlay", s.ExperimentalFlannelOverlay, "Experimental support for starting the kubelet with the default overlay network (flannel). Assumes flanneld is already running in client mode. [default=false]")
 	fs.DurationVar(&s.OutOfDiskTransitionFrequency.Duration, "outofdisk-transition-frequency", s.OutOfDiskTransitionFrequency.Duration, "Duration for which the kubelet has to wait before transitioning out of out-of-disk node condition status. Default: 5m0s")
 	fs.StringVar(&s.NodeIP, "node-ip", s.NodeIP, "IP address of the node. If set, kubelet will use this IP address for the node")
+	fs.BoolVar(&s.EnableCustomMetrics, "enable-custom-metrics", s.EnableCustomMetrics, "Support for gathering custom metrics.")
 }

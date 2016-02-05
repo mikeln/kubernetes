@@ -18,6 +18,7 @@ package master
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -32,6 +33,7 @@ import (
 	"k8s.io/kubernetes/pkg/apimachinery/registered"
 	"k8s.io/kubernetes/pkg/apis/extensions"
 	"k8s.io/kubernetes/pkg/apiserver"
+	apiservermetrics "k8s.io/kubernetes/pkg/apiserver/metrics"
 	"k8s.io/kubernetes/pkg/genericapiserver"
 	"k8s.io/kubernetes/pkg/healthz"
 	kubeletclient "k8s.io/kubernetes/pkg/kubelet/client"
@@ -55,6 +57,7 @@ import (
 	pvetcd "k8s.io/kubernetes/pkg/registry/persistentvolume/etcd"
 	pvcetcd "k8s.io/kubernetes/pkg/registry/persistentvolumeclaim/etcd"
 	podetcd "k8s.io/kubernetes/pkg/registry/pod/etcd"
+	pspetcd "k8s.io/kubernetes/pkg/registry/podsecuritypolicy/etcd"
 	podtemplateetcd "k8s.io/kubernetes/pkg/registry/podtemplate/etcd"
 	resourcequotaetcd "k8s.io/kubernetes/pkg/registry/resourcequota/etcd"
 	secretetcd "k8s.io/kubernetes/pkg/registry/secret/etcd"
@@ -68,6 +71,7 @@ import (
 	thirdpartyresourcedataetcd "k8s.io/kubernetes/pkg/registry/thirdpartyresourcedata/etcd"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/storage"
+	etcdmetrics "k8s.io/kubernetes/pkg/storage/etcd/metrics"
 	etcdutil "k8s.io/kubernetes/pkg/storage/etcd/util"
 	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/pkg/util/sets"
@@ -131,12 +135,15 @@ type thirdPartyEntry struct {
 // Certain config fields will be set to a default value if unset.
 // Certain config fields must be specified, including:
 //   KubeletClient
-func New(c *Config) *Master {
+func New(c *Config) (*Master, error) {
 	if c.KubeletClient == nil {
-		glog.Fatalf("Master.New() called with config.KubeletClient == nil")
+		return nil, fmt.Errorf("Master.New() called with config.KubeletClient == nil")
 	}
 
-	s := genericapiserver.New(c.Config)
+	s, err := genericapiserver.New(c.Config)
+	if err != nil {
+		return nil, err
+	}
 
 	m := &Master{
 		GenericAPIServer:      s,
@@ -155,25 +162,17 @@ func New(c *Config) *Master {
 		m.NewBootstrapController().Start()
 	}
 
-	return m
+	return m, nil
+}
+
+func resetMetrics(w http.ResponseWriter, req *http.Request) {
+	apiservermetrics.Reset()
+	etcdmetrics.Reset()
+	io.WriteString(w, "metrics reset\n")
 }
 
 func (m *Master) InstallAPIs(c *Config) {
 	apiGroupsInfo := []genericapiserver.APIGroupInfo{}
-
-	// Run the tunnel.
-	healthzChecks := []healthz.HealthzChecker{}
-	if m.tunneler != nil {
-		m.tunneler.Run(m.getNodeAddresses)
-		healthzChecks = append(healthzChecks, healthz.NamedCheck("SSH Tunnel Check", m.IsTunnelSyncHealthy))
-		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
-			Name: "apiserver_proxy_tunnel_sync_latency_secs",
-			Help: "The time since the last successful synchronization of the SSH tunnels for proxy requests.",
-		}, func() float64 { return float64(m.tunneler.SecondsSinceSync()) })
-	}
-
-	// TODO(nikhiljindal): Refactor generic parts of support services (like /versions) to genericapiserver.
-	apiserver.InstallSupport(m.MuxHelper, m.RootWebService, c.EnableProfiling, healthzChecks...)
 
 	// Install v1 unless disabled.
 	if !m.ApiGroupVersionOverrides["api/v1"].Disable {
@@ -190,6 +189,23 @@ func (m *Master) InstallAPIs(c *Config) {
 			NegotiatedSerializer: api.Codecs,
 		}
 		apiGroupsInfo = append(apiGroupsInfo, apiGroupInfo)
+	}
+
+	// Run the tunneler.
+	healthzChecks := []healthz.HealthzChecker{}
+	if m.tunneler != nil {
+		m.tunneler.Run(m.getNodeAddresses)
+		healthzChecks = append(healthzChecks, healthz.NamedCheck("SSH Tunnel Check", m.IsTunnelSyncHealthy))
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "apiserver_proxy_tunnel_sync_latency_secs",
+			Help: "The time since the last successful synchronization of the SSH tunnels for proxy requests.",
+		}, func() float64 { return float64(m.tunneler.SecondsSinceSync()) })
+	}
+
+	// TODO(nikhiljindal): Refactor generic parts of support services (like /versions) to genericapiserver.
+	apiserver.InstallSupport(m.MuxHelper, m.RootWebService, healthzChecks...)
+	if c.EnableProfiling {
+		m.MuxHelper.HandleFunc("/resetMetrics", resetMetrics)
 	}
 
 	// Install root web services
@@ -241,23 +257,6 @@ func (m *Master) InstallAPIs(c *Config) {
 	if err := m.InstallAPIGroups(apiGroupsInfo); err != nil {
 		glog.Fatalf("Error in registering group versions: %v", err)
 	}
-
-	// This should be done after all groups are registered
-	// TODO: replace the hardcoded "apis".
-	apiserver.AddApisWebService(m.Serializer, m.HandlerContainer, "/apis", func() []unversioned.APIGroup {
-		groups := []unversioned.APIGroup{}
-		for ix := range allGroups {
-			groups = append(groups, allGroups[ix])
-		}
-		m.thirdPartyResourcesLock.Lock()
-		defer m.thirdPartyResourcesLock.Unlock()
-		if m.thirdPartyResources != nil {
-			for key := range m.thirdPartyResources {
-				groups = append(groups, m.thirdPartyResources[key].group)
-			}
-		}
-		return groups
-	})
 }
 
 func (m *Master) initV1ResourcesStorage(c *Config) {
@@ -292,7 +291,7 @@ func (m *Master) initV1ResourcesStorage(c *Config) {
 		m.ProxyTransport,
 	)
 
-	serviceStorage := serviceetcd.NewREST(dbClient("services"), storageDecorator)
+	serviceStorage, serviceStatusStorage := serviceetcd.NewREST(dbClient("services"), storageDecorator)
 	m.serviceRegistry = service.NewRegistry(serviceStorage)
 
 	var serviceClusterIPRegistry service.RangeRegistry
@@ -336,6 +335,7 @@ func (m *Master) initV1ResourcesStorage(c *Config) {
 		"replicationControllers":        controllerStorage,
 		"replicationControllers/status": controllerStatusStorage,
 		"services":                      service.NewStorage(m.serviceRegistry, m.endpointRegistry, serviceClusterIPAllocator, serviceNodePortAllocator, m.ProxyTransport),
+		"services/status":               serviceStatusStorage,
 		"endpoints":                     endpointsStorage,
 		"nodes":                         nodeStorage,
 		"nodes/status":                  nodeStatusStorage,
@@ -445,6 +445,7 @@ func (m *Master) removeThirdPartyStorage(path string) error {
 			return err
 		}
 		delete(m.thirdPartyResources, path)
+		m.RemoveAPIGroupForDiscovery(getThirdPartyGroupName(path))
 	}
 	return nil
 }
@@ -499,6 +500,7 @@ func (m *Master) addThirdPartyResourceStorage(path string, storage *thirdpartyre
 	m.thirdPartyResourcesLock.Lock()
 	defer m.thirdPartyResourcesLock.Unlock()
 	m.thirdPartyResources[path] = thirdPartyEntry{storage, apiGroup}
+	m.AddAPIGroupForDiscovery(apiGroup)
 }
 
 // InstallThirdPartyResource installs a third party resource specified by 'rsrc'.  When a resource is
@@ -571,7 +573,7 @@ func (m *Master) thirdpartyapi(group, kind, version string) *apiserver.APIGroupV
 // getExperimentalResources returns the resources for extenstions api
 func (m *Master) getExtensionResources(c *Config) map[string]rest.Storage {
 	// All resources except these are disabled by default.
-	enabledResources := sets.NewString("jobs", "horizontalpodautoscalers", "ingresses")
+	enabledResources := sets.NewString("jobs", "horizontalpodautoscalers", "ingresses", "podsecuritypolicy")
 	resourceOverrides := m.ApiGroupVersionOverrides["extensions/v1beta1"].ResourceOverrides
 	isEnabled := func(resource string) bool {
 		// Check if the resource has been overriden.
@@ -622,6 +624,7 @@ func (m *Master) getExtensionResources(c *Config) map[string]rest.Storage {
 		storage["deployments"] = deploymentStorage.Deployment
 		storage["deployments/status"] = deploymentStorage.Status
 		storage["deployments/scale"] = deploymentStorage.Scale
+		storage["deployments/rollback"] = deploymentStorage.Rollback
 	}
 	if isEnabled("jobs") {
 		jobStorage, jobStatusStorage := jobetcd.NewREST(dbClient("jobs"), storageDecorator)
@@ -632,6 +635,10 @@ func (m *Master) getExtensionResources(c *Config) map[string]rest.Storage {
 		ingressStorage, ingressStatusStorage := ingressetcd.NewREST(dbClient("ingresses"), storageDecorator)
 		storage["ingresses"] = ingressStorage
 		storage["ingresses/status"] = ingressStatusStorage
+	}
+	if isEnabled("podsecuritypolicy") {
+		podSecurityPolicyStorage := pspetcd.NewREST(dbClient("podsecuritypolicy"), storageDecorator)
+		storage["podSecurityPolicies"] = podSecurityPolicyStorage
 	}
 
 	return storage

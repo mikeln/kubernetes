@@ -13559,6 +13559,66 @@
     ]
    },
    {
+    "path": "/api/v1/namespaces/{namespace}/services/{name}/status",
+    "description": "API at /api/v1",
+    "operations": [
+     {
+      "type": "v1.Service",
+      "method": "PUT",
+      "summary": "replace status of the specified Service",
+      "nickname": "replaceNamespacedServiceStatus",
+      "parameters": [
+       {
+        "type": "string",
+        "paramType": "query",
+        "name": "pretty",
+        "description": "If 'true', then the output is pretty printed.",
+        "required": false,
+        "allowMultiple": false
+       },
+       {
+        "type": "v1.Service",
+        "paramType": "body",
+        "name": "body",
+        "description": "",
+        "required": true,
+        "allowMultiple": false
+       },
+       {
+        "type": "string",
+        "paramType": "path",
+        "name": "namespace",
+        "description": "object name and auth scope, such as for teams and projects",
+        "required": true,
+        "allowMultiple": false
+       },
+       {
+        "type": "string",
+        "paramType": "path",
+        "name": "name",
+        "description": "name of the Service",
+        "required": true,
+        "allowMultiple": false
+       }
+      ],
+      "responseMessages": [
+       {
+        "code": 200,
+        "message": "OK",
+        "responseModel": "v1.Service"
+       }
+      ],
+      "produces": [
+       "application/json",
+       "application/yaml"
+      ],
+      "consumes": [
+       "*/*"
+      ]
+     }
+    ]
+   },
+   {
     "path": "/api/v1",
     "description": "API at /api/v1",
     "operations": [
@@ -15113,6 +15173,10 @@
       },
       "description": "Required: Monitors is a collection of Ceph monitors More info: http://releases.k8s.io/HEAD/examples/cephfs/README.md#how-to-use-it"
      },
+     "path": {
+      "type": "string",
+      "description": "Optional: Used as the mounted root, rather than the full Ceph tree, default is /"
+     },
      "user": {
       "type": "string",
       "description": "Optional: User is the rados user name, default is admin More info: http://releases.k8s.io/HEAD/examples/cephfs/README.md#how-to-use-it"
@@ -15838,11 +15902,36 @@
      },
      "host": {
       "type": "string",
-      "description": "Host name to connect to, defaults to the pod IP."
+      "description": "Host name to connect to, defaults to the pod IP. You probably want to set \"Host\" in httpHeaders instead."
      },
      "scheme": {
       "type": "string",
       "description": "Scheme to use for connecting to the host. Defaults to HTTP."
+     },
+     "httpHeaders": {
+      "type": "array",
+      "items": {
+       "$ref": "v1.HTTPHeader"
+      },
+      "description": "Custom headers to set in the request. HTTP allows repeated headers."
+     }
+    }
+   },
+   "v1.HTTPHeader": {
+    "id": "v1.HTTPHeader",
+    "description": "HTTPHeader describes a custom header to be used in HTTP probes",
+    "required": [
+     "name",
+     "value"
+    ],
+    "properties": {
+     "name": {
+      "type": "string",
+      "description": "The header field name"
+     },
+     "value": {
+      "type": "string",
+      "description": "The header field value"
      }
     }
    },
