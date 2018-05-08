@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# Copyright 2015 The Kubernetes Authors All rights reserved.
+# Copyright 2015 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,16 +16,26 @@
 
 function start()
 {
+    # targetcli need dbus
+    mkdir /run/dbus
+    dbus-daemon  --system
+
+    # clear any previous configuration
+    targetcli clearconfig confirm=True
+
+    # restore configuration from saveconfig.json
     targetcli restoreconfig
-    iscsid
+
+    # maximum log level
+    iscsid -f -d 8
+
     echo "iscsid started"
 }
 
 function stop()
 {
     echo "Stopping iscsid"
-
-    kill $( cat /var/run/iscsid.pid )
+    killall iscsid
     targetcli clearconfig confirm=True
 
     echo "iscsid stopped"

@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,138 +16,128 @@ limitations under the License.
 
 // Package options provides the flags used for the controller manager.
 //
-// CAUTION: If you update code in this file, you may need to also update code
-//          in contrib/mesos/pkg/controllermanager/controllermanager.go
 package options
 
 import (
-	"net"
-	"time"
+	"fmt"
+	"strings"
 
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/apimachinery/pkg/util/sets"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	cmoptions "k8s.io/kubernetes/cmd/controller-manager/app/options"
+	kubecontrollerconfig "k8s.io/kubernetes/cmd/kube-controller-manager/app/config"
 	"k8s.io/kubernetes/pkg/apis/componentconfig"
-	"k8s.io/kubernetes/pkg/client/leaderelection"
-	daemonoptions "k8s.io/kubernetes/pkg/controller/daemon/options"
-	deploymentoptions "k8s.io/kubernetes/pkg/controller/deployment/options"
-	endpointoptions "k8s.io/kubernetes/pkg/controller/endpoint/options"
-	gcoptions "k8s.io/kubernetes/pkg/controller/gc/options"
-	joboptions "k8s.io/kubernetes/pkg/controller/job/options"
-	namespaceoptions "k8s.io/kubernetes/pkg/controller/namespace/options"
-	nodeoptions "k8s.io/kubernetes/pkg/controller/node/options"
-	pvoptions "k8s.io/kubernetes/pkg/controller/persistentvolume/options"
-	hpaoptions "k8s.io/kubernetes/pkg/controller/podautoscaler/options"
-	replicationoptions "k8s.io/kubernetes/pkg/controller/replication/options"
-	resourcequotaoptions "k8s.io/kubernetes/pkg/controller/resourcequota/options"
-	serviceoptions "k8s.io/kubernetes/pkg/controller/service/options"
-	serviceaccountoptions "k8s.io/kubernetes/pkg/controller/serviceaccount/options"
-
+	"k8s.io/kubernetes/pkg/controller/garbagecollector"
 	"k8s.io/kubernetes/pkg/master/ports"
+
+	// add the kubernetes feature gates
+	_ "k8s.io/kubernetes/pkg/features"
 
 	"github.com/spf13/pflag"
 )
 
-// CMServer is the main context object for the controller manager.
-type CMServer struct {
-	Address         net.IP
-	CloudConfigFile string
-	CloudProvider   string
-	ClusterName     string
-	EnableProfiling bool
-	KubeAPIBurst    int
-	KubeAPIQPS      float32
-	Kubeconfig      string
-	Master          string
-	MinResyncPeriod time.Duration
-	Port            int
-	RootCAFile      string
-
-	DaemonControllerOptions           daemonoptions.DaemonControllerOptions
-	DeploymentControllerOptions       deploymentoptions.DeploymentControllerOptions
-	EndpointControllerOptions         endpointoptions.EndpointControllerOptions
-	GarbageCollectorOptions           gcoptions.GarbageCollectorOptions
-	JobControllerOptions              joboptions.JobControllerOptions
-	LeaderElection                    componentconfig.LeaderElectionConfiguration
-	NamespaceControllerOptions        namespaceoptions.NamespaceControllerOptions
-	NodeControllerOptions             nodeoptions.NodeControllerOptions
-	PersistentVolumeControllerOptions pvoptions.PersistentVolumeControllerOptions
-	PodAutoscalerOptions              hpaoptions.PodAutoscalerOptions
-	ReplicationControllerOptions      replicationoptions.ReplicationControllerOptions
-	ResourceQuotaControllerOptions    resourcequotaoptions.ResourceQuotaControllerOptions
-	ServiceControllerOptions          serviceoptions.ServiceControllerOptions
-	ServiceAccountControllerOptions   serviceaccountoptions.ServiceAccountControllerOptions
-
-	// TODO: split into different rates for different components (?)
-	NodeSyncPeriod time.Duration
-
-	// deprecated
-	DeploymentControllerSyncPeriod time.Duration
-	RegisterRetryCount             int
+// KubeControllerManagerOptions is the main context object for the controller manager.
+type KubeControllerManagerOptions struct {
+	Generic *cmoptions.GenericControllerManagerOptions
 }
 
-// NewCMServer creates a new CMServer with a default config.
-func NewCMServer() *CMServer {
-	s := CMServer{
-		Address:         net.ParseIP("0.0.0.0"),
-		ClusterName:     "kubernetes",
-		KubeAPIQPS:      20.0,
-		KubeAPIBurst:    30,
-		MinResyncPeriod: 12 * time.Hour,
-		Port:            ports.ControllerManagerPort,
-
-		NodeSyncPeriod: 10 * time.Second,
-
-		LeaderElection:                    leaderelection.DefaultLeaderElectionConfiguration(),
-		DeploymentControllerOptions:       deploymentoptions.NewDeploymentControllerOptions(),
-		DaemonControllerOptions:           daemonoptions.NewDaemonControllerOptions(),
-		EndpointControllerOptions:         endpointoptions.NewEndpointControllerOptions(),
-		GarbageCollectorOptions:           gcoptions.NewGarbageCollectorOptions(),
-		JobControllerOptions:              joboptions.NewJobControllerOptions(),
-		NamespaceControllerOptions:        namespaceoptions.NewNamespaceControllerOptions(),
-		NodeControllerOptions:             nodeoptions.NewNodeControllerOptions(),
-		PersistentVolumeControllerOptions: pvoptions.NewPersistentVolumeControllerOptions(),
-		PodAutoscalerOptions:              hpaoptions.NewPodAutoscalerOptions(),
-		ReplicationControllerOptions:      replicationoptions.NewReplicationControllerOptions(),
-		ResourceQuotaControllerOptions:    resourcequotaoptions.NewResourceQuotaControllerOptions(),
-		ServiceControllerOptions:          serviceoptions.NewServiceControllerOptions(),
-		ServiceAccountControllerOptions:   serviceaccountoptions.NewServiceAccountControllerOptions(),
+// NewKubeControllerManagerOptions creates a new KubeControllerManagerOptions with a default config.
+func NewKubeControllerManagerOptions() *KubeControllerManagerOptions {
+	componentConfig := cmoptions.NewDefaultControllerManagerComponentConfig(ports.InsecureKubeControllerManagerPort)
+	s := KubeControllerManagerOptions{
+		// The common/default are kept in 'cmd/kube-controller-manager/app/options/util.go'.
+		// Please make common changes there but put anything kube-controller specific here.
+		Generic: cmoptions.NewGenericControllerManagerOptions(componentConfig),
 	}
+
+	s.Generic.SecureServing.ServerCert.CertDirectory = "/var/run/kubernetes"
+	s.Generic.SecureServing.ServerCert.PairName = "kube-controller-manager"
+
+	gcIgnoredResources := make([]componentconfig.GroupResource, 0, len(garbagecollector.DefaultIgnoredResources()))
+	for r := range garbagecollector.DefaultIgnoredResources() {
+		gcIgnoredResources = append(gcIgnoredResources, componentconfig.GroupResource{Group: r.Group, Resource: r.Resource})
+	}
+
+	s.Generic.GarbageCollectorController.GCIgnoredResources = gcIgnoredResources
+
 	return &s
 }
 
-// AddFlags adds flags for a specific CMServer to the specified FlagSet
-func (s *CMServer) AddFlags(fs *pflag.FlagSet) {
-	fs.IPVar(&s.Address, "address", s.Address, "The IP address to serve on (set to 0.0.0.0 for all interfaces)")
-	fs.StringVar(&s.CloudConfigFile, "cloud-config", s.CloudConfigFile, "The path to the cloud provider configuration file.  Empty string for no configuration file.")
-	fs.StringVar(&s.CloudProvider, "cloud-provider", s.CloudProvider, "The provider for cloud services.  Empty string for no provider.")
-	fs.StringVar(&s.ClusterName, "cluster-name", s.ClusterName, "The instance prefix for the cluster")
-	fs.BoolVar(&s.EnableProfiling, "profiling", true, "Enable profiling via web interface host:port/debug/pprof/")
-	fs.IntVar(&s.KubeAPIBurst, "kube-api-burst", s.KubeAPIBurst, "Burst to use while talking with kubernetes apiserver")
-	fs.Float32Var(&s.KubeAPIQPS, "kube-api-qps", s.KubeAPIQPS, "QPS to use while talking with kubernetes apiserver")
-	fs.StringVar(&s.Kubeconfig, "kubeconfig", s.Kubeconfig, "Path to kubeconfig file with authorization and master location information.")
-	fs.StringVar(&s.Master, "master", s.Master, "The address of the Kubernetes API server (overrides any value in kubeconfig)")
-	fs.DurationVar(&s.MinResyncPeriod, "min-resync-period", s.MinResyncPeriod, "The resync period in reflectors will be random between MinResyncPeriod and 2*MinResyncPeriod")
-	fs.IntVar(&s.Port, "port", s.Port, "The port that the controller-manager's http service runs on")
-	fs.StringVar(&s.RootCAFile, "root-ca-file", s.RootCAFile, "If set, this root certificate authority will be included in service account's token secret. This must be a valid PEM-encoded CA bundle.")
+// AddFlags adds flags for a specific KubeControllerManagerOptions to the specified FlagSet
+func (s *KubeControllerManagerOptions) AddFlags(fs *pflag.FlagSet, allControllers []string, disabledByDefaultControllers []string) {
+	s.Generic.AddFlags(fs)
+	s.Generic.AttachDetachController.AddFlags(fs)
+	s.Generic.CSRSigningController.AddFlags(fs)
+	s.Generic.DeploymentController.AddFlags(fs)
+	s.Generic.DaemonSetController.AddFlags(fs)
+	s.Generic.DeprecatedFlags.AddFlags(fs)
+	s.Generic.EndPointController.AddFlags(fs)
+	s.Generic.GarbageCollectorController.AddFlags(fs)
+	s.Generic.HPAController.AddFlags(fs)
+	s.Generic.JobController.AddFlags(fs)
+	s.Generic.NamespaceController.AddFlags(fs)
+	s.Generic.NodeIpamController.AddFlags(fs)
+	s.Generic.NodeLifecycleController.AddFlags(fs)
+	s.Generic.PersistentVolumeBinderController.AddFlags(fs)
+	s.Generic.PodGCController.AddFlags(fs)
+	s.Generic.ReplicaSetController.AddFlags(fs)
+	s.Generic.ReplicationController.AddFlags(fs)
+	s.Generic.ResourceQuotaController.AddFlags(fs)
+	s.Generic.SAController.AddFlags(fs)
 
-	fs.DurationVar(&s.NodeSyncPeriod, "node-sync-period", s.NodeSyncPeriod, ""+
-		"The period for syncing nodes from cloudprovider. Longer periods will result in "+
-		"fewer calls to cloud provider, but may delay addition of new nodes to cluster.")
-	s.LeaderElection.AddFlags(fs)
-	s.DaemonControllerOptions.AddFlags(fs)
-	s.DeploymentControllerOptions.AddFlags(fs)
-	s.EndpointControllerOptions.AddFlags(fs)
-	s.GarbageCollectorOptions.AddFlags(fs)
-	s.JobControllerOptions.AddFlags(fs)
-	s.NamespaceControllerOptions.AddFlags(fs)
-	s.NodeControllerOptions.AddFlags(fs)
-	s.PersistentVolumeControllerOptions.AddFlags(fs)
-	s.PodAutoscalerOptions.AddFlags(fs)
-	s.ReplicationControllerOptions.AddFlags(fs)
-	s.ResourceQuotaControllerOptions.AddFlags(fs)
-	s.ServiceControllerOptions.AddFlags(fs)
-	s.ServiceAccountControllerOptions.AddFlags(fs)
-	fs.DurationVar(&s.DeploymentControllerSyncPeriod, "deployment-controller-sync-period", 0, "Period for syncing the deployments.")
-	fs.MarkDeprecated("deployment-controller-sync-period", "This flag is currently no-op and will be deleted.")
-	fs.IntVar(&s.RegisterRetryCount, "register-retry-count", 0, ""+
-		"The number of retries for initial node registration.  Retry interval equals node-sync-period.")
-	fs.MarkDeprecated("register-retry-count", "This flag is currently no-op and will be deleted.")
+	fs.StringSliceVar(&s.Generic.Controllers, "controllers", s.Generic.Controllers, fmt.Sprintf(""+
+		"A list of controllers to enable.  '*' enables all on-by-default controllers, 'foo' enables the controller "+
+		"named 'foo', '-foo' disables the controller named 'foo'.\nAll controllers: %s\nDisabled-by-default controllers: %s",
+		strings.Join(allControllers, ", "), strings.Join(disabledByDefaultControllers, ", ")))
+	fs.StringVar(&s.Generic.ExternalCloudVolumePlugin, "external-cloud-volume-plugin", s.Generic.ExternalCloudVolumePlugin, "The plugin to use when cloud provider is set to external. Can be empty, should only be set when cloud-provider is external. Currently used to allow node and volume controllers to work for in tree cloud providers.")
+	var dummy string
+	fs.MarkDeprecated("insecure-experimental-approve-all-kubelet-csrs-for-group", "This flag does nothing.")
+	fs.StringVar(&dummy, "insecure-experimental-approve-all-kubelet-csrs-for-group", "", "This flag does nothing.")
+	utilfeature.DefaultFeatureGate.AddFlag(fs)
+}
+
+// ApplyTo fills up controller manager config with options.
+func (s *KubeControllerManagerOptions) ApplyTo(c *kubecontrollerconfig.Config) error {
+	err := s.Generic.ApplyTo(&c.Generic, "controller-manager")
+
+	c.Generic.ComponentConfig.Controllers = s.Generic.Controllers
+	c.Generic.ComponentConfig.ExternalCloudVolumePlugin = s.Generic.ExternalCloudVolumePlugin
+
+	return err
+}
+
+// Validate is used to validate the options and config before launching the controller manager
+func (s *KubeControllerManagerOptions) Validate(allControllers []string, disabledByDefaultControllers []string) error {
+	var errs []error
+
+	allControllersSet := sets.NewString(allControllers...)
+	for _, controller := range s.Generic.Controllers {
+		if controller == "*" {
+			continue
+		}
+		if strings.HasPrefix(controller, "-") {
+			controller = controller[1:]
+		}
+
+		if !allControllersSet.Has(controller) {
+			errs = append(errs, fmt.Errorf("%q is not in the list of known controllers", controller))
+		}
+	}
+
+	return utilerrors.NewAggregate(errs)
+}
+
+// Config return a controller manager config objective
+func (s KubeControllerManagerOptions) Config(allControllers []string, disabledByDefaultControllers []string) (*kubecontrollerconfig.Config, error) {
+	if err := s.Validate(allControllers, disabledByDefaultControllers); err != nil {
+		return nil, err
+	}
+
+	c := &kubecontrollerconfig.Config{}
+	if err := s.ApplyTo(c); err != nil {
+		return nil, err
+	}
+
+	return c, nil
 }

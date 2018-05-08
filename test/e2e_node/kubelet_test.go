@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,195 +18,183 @@ package e2e_node
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
+	"k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/uuid"
+	"k8s.io/kubernetes/test/e2e/framework"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-	"io/ioutil"
-	"k8s.io/kubernetes/pkg/api"
-	client "k8s.io/kubernetes/pkg/client/unversioned"
-	"k8s.io/kubernetes/pkg/kubelet/server/stats"
 )
 
-var _ = Describe("Kubelet", func() {
-	var cl *client.Client
+var _ = framework.KubeDescribe("Kubelet", func() {
+	f := framework.NewDefaultFramework("kubelet-test")
+	var podClient *framework.PodClient
 	BeforeEach(func() {
-		// Setup the apiserver client
-		cl = client.NewOrDie(&client.Config{Host: *apiServerAddress})
+		podClient = f.PodClient()
 	})
-
-	Describe("pod scheduling", func() {
-		Context("when scheduling a busybox command in a pod", func() {
-			It("it should return succes", func() {
-				pod := &api.Pod{
-					ObjectMeta: api.ObjectMeta{
-						Name:      "busybox",
-						Namespace: api.NamespaceDefault,
+	Context("when scheduling a busybox command in a pod", func() {
+		podName := "busybox-scheduling-" + string(uuid.NewUUID())
+		framework.ConformanceIt("it should print the output to logs", func() {
+			podClient.CreateSync(&v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: podName,
+				},
+				Spec: v1.PodSpec{
+					// Don't restart the Pod since it is expected to exit
+					RestartPolicy: v1.RestartPolicyNever,
+					Containers: []v1.Container{
+						{
+							Image:   busyboxImage,
+							Name:    podName,
+							Command: []string{"sh", "-c", "echo 'Hello World' ; sleep 240"},
+						},
 					},
-					Spec: api.PodSpec{
-						// Force the Pod to schedule to the node without a scheduler running
-						NodeName: *nodeName,
-						// Don't restart the Pod since it is expected to exit
-						RestartPolicy: api.RestartPolicyNever,
-						Containers: []api.Container{
-							{
-								Image:   "gcr.io/google_containers/busybox",
-								Name:    "busybox",
-								Command: []string{"echo", "'Hello World'"},
+				},
+			})
+			Eventually(func() string {
+				sinceTime := metav1.NewTime(time.Now().Add(time.Duration(-1 * time.Hour)))
+				rc, err := podClient.GetLogs(podName, &v1.PodLogOptions{SinceTime: &sinceTime}).Stream()
+				if err != nil {
+					return ""
+				}
+				defer rc.Close()
+				buf := new(bytes.Buffer)
+				buf.ReadFrom(rc)
+				return buf.String()
+			}, time.Minute, time.Second*4).Should(Equal("Hello World\n"))
+		})
+	})
+	Context("when scheduling a busybox command that always fails in a pod", func() {
+		var podName string
+
+		BeforeEach(func() {
+			podName = "bin-false" + string(uuid.NewUUID())
+			podClient.Create(&v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: podName,
+				},
+				Spec: v1.PodSpec{
+					// Don't restart the Pod since it is expected to exit
+					RestartPolicy: v1.RestartPolicyNever,
+					Containers: []v1.Container{
+						{
+							Image:   busyboxImage,
+							Name:    podName,
+							Command: []string{"/bin/false"},
+						},
+					},
+				},
+			})
+		})
+
+		It("should have an error terminated reason", func() {
+			Eventually(func() error {
+				podData, err := podClient.Get(podName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				if len(podData.Status.ContainerStatuses) != 1 {
+					return fmt.Errorf("expected only one container in the pod %q", podName)
+				}
+				contTerminatedState := podData.Status.ContainerStatuses[0].State.Terminated
+				if contTerminatedState == nil {
+					return fmt.Errorf("expected state to be terminated. Got pod status: %+v", podData.Status)
+				}
+				if contTerminatedState.Reason != "Error" {
+					return fmt.Errorf("expected terminated state reason to be error. Got %+v", contTerminatedState)
+				}
+				return nil
+			}, time.Minute, time.Second*4).Should(BeNil())
+		})
+
+		It("should be possible to delete", func() {
+			err := podClient.Delete(podName, &metav1.DeleteOptions{})
+			Expect(err).To(BeNil(), fmt.Sprintf("Error deleting Pod %v", err))
+		})
+	})
+	Context("when scheduling a busybox Pod with hostAliases", func() {
+		podName := "busybox-host-aliases" + string(uuid.NewUUID())
+
+		It("it should write entries to /etc/hosts", func() {
+			podClient.CreateSync(&v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: podName,
+				},
+				Spec: v1.PodSpec{
+					// Don't restart the Pod since it is expected to exit
+					RestartPolicy: v1.RestartPolicyNever,
+					Containers: []v1.Container{
+						{
+							Image:   busyboxImage,
+							Name:    podName,
+							Command: []string{"/bin/sh", "-c", "cat /etc/hosts; sleep 6000"},
+						},
+					},
+					HostAliases: []v1.HostAlias{
+						{
+							IP:        "123.45.67.89",
+							Hostnames: []string{"foo", "bar"},
+						},
+					},
+				},
+			})
+
+			Eventually(func() error {
+				rc, err := podClient.GetLogs(podName, &v1.PodLogOptions{}).Stream()
+				defer rc.Close()
+				if err != nil {
+					return err
+				}
+				buf := new(bytes.Buffer)
+				buf.ReadFrom(rc)
+				hostsFileContent := buf.String()
+
+				if !strings.Contains(hostsFileContent, "123.45.67.89\tfoo") || !strings.Contains(hostsFileContent, "123.45.67.89\tbar") {
+					return fmt.Errorf("expected hosts file to contain entries from HostAliases. Got:\n%+v", hostsFileContent)
+				}
+
+				return nil
+			}, time.Minute, time.Second*4).Should(BeNil())
+		})
+	})
+	Context("when scheduling a read only busybox container", func() {
+		podName := "busybox-readonly-fs" + string(uuid.NewUUID())
+		framework.ConformanceIt("it should not write to root filesystem", func() {
+			isReadOnly := true
+			podClient.CreateSync(&v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: podName,
+				},
+				Spec: v1.PodSpec{
+					// Don't restart the Pod since it is expected to exit
+					RestartPolicy: v1.RestartPolicyNever,
+					Containers: []v1.Container{
+						{
+							Image:   busyboxImage,
+							Name:    podName,
+							Command: []string{"/bin/sh", "-c", "echo test > /file; sleep 240"},
+							SecurityContext: &v1.SecurityContext{
+								ReadOnlyRootFilesystem: &isReadOnly,
 							},
 						},
 					},
+				},
+			})
+			Eventually(func() string {
+				rc, err := podClient.GetLogs(podName, &v1.PodLogOptions{}).Stream()
+				if err != nil {
+					return ""
 				}
-				_, err := cl.Pods(api.NamespaceDefault).Create(pod)
-				Expect(err).To(BeNil(), fmt.Sprintf("Error creating Pod %v", err))
-			})
-
-			It("it should print the output to logs", func() {
-				errs := Retry(time.Minute, time.Second*4, func() error {
-					rc, err := cl.Pods(api.NamespaceDefault).GetLogs("busybox", &api.PodLogOptions{}).Stream()
-					if err != nil {
-						return err
-					}
-					defer rc.Close()
-					buf := new(bytes.Buffer)
-					buf.ReadFrom(rc)
-					if buf.String() != "'Hello World'\n" {
-						return fmt.Errorf("Expected %s to match 'Hello World'", buf.String())
-					}
-					return nil
-				})
-				Expect(errs).To(BeEmpty(), fmt.Sprintf("Failed to get Logs"))
-			})
-
-			It("it should be possible to delete", func() {
-				err := cl.Pods(api.NamespaceDefault).Delete("busybox", &api.DeleteOptions{})
-				Expect(err).To(BeNil(), fmt.Sprintf("Error creating Pod %v", err))
-			})
-		})
-	})
-
-	Describe("metrics api", func() {
-		statsPrefix := "stats-busybox-"
-		podNames := []string{}
-		podCount := 2
-		for i := 0; i < podCount; i++ {
-			podNames = append(podNames, fmt.Sprintf("%s%v", statsPrefix, i))
-		}
-		BeforeEach(func() {
-			for _, podName := range podNames {
-				createPod(cl, podName, []api.Container{
-					{
-						Image:   "gcr.io/google_containers/busybox",
-						Command: []string{"sh", "-c", "echo 'Hello World' | tee ~/file | tee -a ~/file | tee /test-empty-dir | sleep 60"},
-						Name:    podName + containerSuffix,
-					},
-				})
-			}
-
-			// Sleep long enough for cadvisor to see the pod and calculate all of its metrics
-			time.Sleep(60 * time.Second)
-		})
-
-		Context("when querying /stats/summary", func() {
-			It("it should report resource usage through the stats api", func() {
-				resp, err := http.Get(*kubeletAddress + "/stats/summary")
-				now := time.Now()
-				Expect(err).To(BeNil(), fmt.Sprintf("Failed to get /stats/summary"))
-				summary := stats.Summary{}
-				contentsBytes, err := ioutil.ReadAll(resp.Body)
-				Expect(err).To(BeNil(), fmt.Sprintf("Failed to read /stats/summary: %+v", resp))
-				contents := string(contentsBytes)
-				decoder := json.NewDecoder(strings.NewReader(contents))
-				err = decoder.Decode(&summary)
-				Expect(err).To(BeNil(), fmt.Sprintf("Failed to parse /stats/summary to go struct: %+v", resp))
-
-				// Verify Misc Stats
-				Expect(summary.Time.Time).To(BeTemporally("~", now, 20*time.Second))
-
-				// Verify Node Stats are present
-				Expect(summary.Node.NodeName).To(Equal(*nodeName))
-				Expect(summary.Node.CPU.UsageCoreNanoSeconds).NotTo(BeZero())
-				Expect(summary.Node.Memory.UsageBytes).NotTo(BeZero())
-				Expect(summary.Node.Memory.WorkingSetBytes).NotTo(BeZero())
-				Expect(summary.Node.Fs.UsedBytes).NotTo(BeZero())
-				Expect(summary.Node.Fs.CapacityBytes).NotTo(BeZero())
-				Expect(summary.Node.Fs.AvailableBytes).NotTo(BeZero())
-
-				sysContainers := map[string]stats.ContainerStats{}
-				sysContainersList := []string{}
-				for _, container := range summary.Node.SystemContainers {
-					sysContainers[container.Name] = container
-					sysContainersList = append(sysContainersList, container.Name)
-					Expect(container.CPU.UsageCoreNanoSeconds).NotTo(BeZero())
-					// TODO: Test Network
-					Expect(container.Memory.UsageBytes).NotTo(BeZero())
-					Expect(container.Memory.WorkingSetBytes).NotTo(BeZero())
-					Expect(container.Rootfs.CapacityBytes).NotTo(BeZero())
-					Expect(container.Rootfs.AvailableBytes).NotTo(BeZero())
-					Expect(container.Logs.CapacityBytes).NotTo(BeZero())
-					Expect(container.Logs.AvailableBytes).NotTo(BeZero())
-				}
-				Expect(sysContainersList).To(ConsistOf("kubelet", "runtime"))
-
-				// Verify Pods Stats are present
-				podsList := []string{}
-				for _, pod := range summary.Pods {
-					if !strings.HasPrefix(pod.PodRef.Name, statsPrefix) {
-						// Ignore pods created outside this test
-						continue
-
-					}
-					// TODO: Test network
-
-					podsList = append(podsList, pod.PodRef.Name)
-					Expect(pod.Containers).To(HaveLen(1))
-					container := pod.Containers[0]
-					Expect(container.Name).To(Equal(pod.PodRef.Name + containerSuffix))
-					Expect(container.CPU.UsageCoreNanoSeconds).NotTo(BeZero())
-					Expect(container.Memory.UsageBytes).NotTo(BeZero())
-					Expect(container.Memory.WorkingSetBytes).NotTo(BeZero())
-					Expect(container.Rootfs.CapacityBytes).NotTo(BeZero())
-					Expect(container.Rootfs.AvailableBytes).NotTo(BeZero())
-					Expect(*container.Rootfs.UsedBytes).NotTo(BeZero(), contents)
-					Expect(container.Logs.CapacityBytes).NotTo(BeZero())
-					Expect(container.Logs.AvailableBytes).NotTo(BeZero())
-					Expect(*container.Logs.UsedBytes).NotTo(BeZero(), contents)
-				}
-				Expect(podsList).To(ConsistOf(podNames))
-			})
-		})
-
-		AfterEach(func() {
-			for _, podName := range podNames {
-				err := cl.Pods(api.NamespaceDefault).Delete(podName, &api.DeleteOptions{})
-				Expect(err).To(BeNil(), fmt.Sprintf("Error deleting Pod %v", podName))
-			}
+				defer rc.Close()
+				buf := new(bytes.Buffer)
+				buf.ReadFrom(rc)
+				return buf.String()
+			}, time.Minute, time.Second*4).Should(Equal("/bin/sh: can't create /file: Read-only file system\n"))
 		})
 	})
 })
-
-const (
-	containerSuffix = "-c"
-)
-
-func createPod(cl *client.Client, podName string, containers []api.Container) {
-	pod := &api.Pod{
-		ObjectMeta: api.ObjectMeta{
-			Name:      podName,
-			Namespace: api.NamespaceDefault,
-		},
-		Spec: api.PodSpec{
-			// Force the Pod to schedule to the node without a scheduler running
-			NodeName: *nodeName,
-			// Don't restart the Pod since it is expected to exit
-			RestartPolicy: api.RestartPolicyNever,
-			Containers:    containers,
-		},
-	}
-	_, err := cl.Pods(api.NamespaceDefault).Create(pod)
-	Expect(err).To(BeNil(), fmt.Sprintf("Error creating Pod %v", err))
-}

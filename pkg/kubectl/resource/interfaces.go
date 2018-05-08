@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,30 +17,56 @@ limitations under the License.
 package resource
 
 import (
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/meta"
-	client "k8s.io/kubernetes/pkg/client/unversioned"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
 )
+
+type ClientConfigFunc func() (*rest.Config, error)
 
 // RESTClient is a client helper for dealing with RESTful resources
 // in a generic way.
 type RESTClient interface {
-	Get() *client.Request
-	Post() *client.Request
-	Patch(api.PatchType) *client.Request
-	Delete() *client.Request
-	Put() *client.Request
+	Get() *rest.Request
+	Post() *rest.Request
+	Patch(types.PatchType) *rest.Request
+	Delete() *rest.Request
+	Put() *rest.Request
 }
 
-// ClientMapper abstracts retrieving a Client for mapped objects.
-type ClientMapper interface {
-	ClientForMapping(mapping *meta.RESTMapping) (RESTClient, error)
+// RequestTransform is a function that is given a chance to modify the outgoing request.
+type RequestTransform func(*rest.Request)
+
+// NewClientWithOptions wraps the provided RESTClient and invokes each transform on each
+// newly created request.
+func NewClientWithOptions(c RESTClient, transforms ...RequestTransform) RESTClient {
+	return &clientOptions{c: c, transforms: transforms}
 }
 
-// ClientMapperFunc implements ClientMapper for a function
-type ClientMapperFunc func(mapping *meta.RESTMapping) (RESTClient, error)
+type clientOptions struct {
+	c          RESTClient
+	transforms []RequestTransform
+}
 
-// ClientForMapping implements ClientMapper
-func (f ClientMapperFunc) ClientForMapping(mapping *meta.RESTMapping) (RESTClient, error) {
-	return f(mapping)
+func (c *clientOptions) modify(req *rest.Request) *rest.Request {
+	for _, transform := range c.transforms {
+		transform(req)
+	}
+	return req
+}
+
+func (c *clientOptions) Get() *rest.Request {
+	return c.modify(c.c.Get())
+}
+
+func (c *clientOptions) Post() *rest.Request {
+	return c.modify(c.c.Post())
+}
+func (c *clientOptions) Patch(t types.PatchType) *rest.Request {
+	return c.modify(c.c.Patch(t))
+}
+func (c *clientOptions) Delete() *rest.Request {
+	return c.modify(c.c.Delete())
+}
+func (c *clientOptions) Put() *rest.Request {
+	return c.modify(c.c.Put())
 }

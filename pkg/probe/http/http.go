@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,14 +24,21 @@ import (
 	"net/url"
 	"time"
 
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/kubernetes/pkg/probe"
+	"k8s.io/kubernetes/pkg/version"
 
 	"github.com/golang/glog"
 )
 
 func New() HTTPProber {
 	tlsConfig := &tls.Config{InsecureSkipVerify: true}
-	transport := &http.Transport{TLSClientConfig: tlsConfig, DisableKeepAlives: true}
+	return NewWithTLSConfig(tlsConfig)
+}
+
+// NewWithTLSConfig takes tls config as parameter.
+func NewWithTLSConfig(config *tls.Config) HTTPProber {
+	transport := utilnet.SetTransportDefaults(&http.Transport{TLSClientConfig: config, DisableKeepAlives: true})
 	return httpProber{transport}
 }
 
@@ -62,7 +69,18 @@ func DoHTTPProbe(url *url.URL, headers http.Header, client HTTPGetInterface) (pr
 		// Convert errors into failures to catch timeouts.
 		return probe.Failure, err.Error(), nil
 	}
+	if _, ok := headers["User-Agent"]; !ok {
+		if headers == nil {
+			headers = http.Header{}
+		}
+		// explicitly set User-Agent so it's not set to default Go value
+		v := version.Get()
+		headers.Set("User-Agent", fmt.Sprintf("kube-probe/%s.%s", v.Major, v.Minor))
+	}
 	req.Header = headers
+	if headers.Get("Host") != "" {
+		req.Host = headers.Get("Host")
+	}
 	res, err := client.Do(req)
 	if err != nil {
 		// Convert errors into failures to catch timeouts.
@@ -78,6 +96,6 @@ func DoHTTPProbe(url *url.URL, headers http.Header, client HTTPGetInterface) (pr
 		glog.V(4).Infof("Probe succeeded for %s, Response: %v", url.String(), *res)
 		return probe.Success, body, nil
 	}
-	glog.V(4).Infof("Probe failed for %s, Response: %v", url.String(), *res)
+	glog.V(4).Infof("Probe failed for %s with request headers %v, response body: %v", url.String(), headers, body)
 	return probe.Failure, fmt.Sprintf("HTTP probe failed with statuscode: %d", res.StatusCode), nil
 }

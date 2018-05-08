@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,21 +18,22 @@ package gce_pd
 
 import (
 	"fmt"
-	"os"
 	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/golang/glog"
+	"k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/kubernetes/pkg/cloudprovider"
 	gcecloud "k8s.io/kubernetes/pkg/cloudprovider/providers/gce"
-	"k8s.io/kubernetes/pkg/util"
-	"k8s.io/kubernetes/pkg/util/exec"
-	"k8s.io/kubernetes/pkg/util/keymutex"
-	"k8s.io/kubernetes/pkg/util/runtime"
-	"k8s.io/kubernetes/pkg/util/sets"
+	"k8s.io/kubernetes/pkg/features"
+	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
 	"k8s.io/kubernetes/pkg/volume"
+	volumeutil "k8s.io/kubernetes/pkg/volume/util"
+	"k8s.io/utils/exec"
 )
 
 const (
@@ -42,164 +43,221 @@ const (
 	diskPartitionSuffix  = "-part"
 	diskSDPath           = "/dev/sd"
 	diskSDPattern        = "/dev/sd*"
-	maxChecks            = 60
 	maxRetries           = 10
 	checkSleepDuration   = time.Second
-	errorSleepDuration   = 5 * time.Second
+	maxRegionalPDZones   = 2
+
+	// Replication type constants must be lower case.
+	replicationTypeNone       = "none"
+	replicationTypeRegionalPD = "regional-pd"
 )
 
-// Singleton key mutex for keeping attach/detach operations for the same PD atomic
-var attachDetachMutex = keymutex.NewKeyMutex()
+// These variables are modified only in unit tests and should be constant
+// otherwise.
+var (
+	errorSleepDuration time.Duration = 5 * time.Second
+)
 
 type GCEDiskUtil struct{}
 
-// Attaches a disk specified by a volume.GCEPersistentDisk to the current kubelet.
-// Mounts the disk to it's global path.
-func (diskUtil *GCEDiskUtil) AttachAndMountDisk(b *gcePersistentDiskBuilder, globalPDPath string) error {
-	glog.V(5).Infof("AttachAndMountDisk(...) called for PD %q. Will block for existing operations, if any. (globalPDPath=%q)\r\n", b.pdName, globalPDPath)
-
-	// Block execution until any pending detach operations for this PD have completed
-	attachDetachMutex.LockKey(b.pdName)
-	defer attachDetachMutex.UnlockKey(b.pdName)
-
-	glog.V(5).Infof("AttachAndMountDisk(...) called for PD %q. Awake and ready to execute. (globalPDPath=%q)\r\n", b.pdName, globalPDPath)
-
-	sdBefore, err := filepath.Glob(diskSDPattern)
-	if err != nil {
-		glog.Errorf("Error filepath.Glob(\"%s\"): %v\r\n", diskSDPattern, err)
-	}
-	sdBeforeSet := sets.NewString(sdBefore...)
-
-	devicePath, err := attachDiskAndVerify(b, sdBeforeSet)
-	if err != nil {
-		return err
-	}
-
-	// Only mount the PD globally once.
-	notMnt, err := b.mounter.IsLikelyNotMountPoint(globalPDPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			if err := os.MkdirAll(globalPDPath, 0750); err != nil {
-				return err
-			}
-			notMnt = true
-		} else {
-			return err
-		}
-	}
-	options := []string{}
-	if b.readOnly {
-		options = append(options, "ro")
-	}
-	if notMnt {
-		err = b.diskMounter.FormatAndMount(devicePath, globalPDPath, b.fsType, options)
-		if err != nil {
-			os.Remove(globalPDPath)
-			return err
-		}
-	}
-	return nil
-}
-
-// Unmounts the device and detaches the disk from the kubelet's host machine.
-func (util *GCEDiskUtil) DetachDisk(c *gcePersistentDiskCleaner) error {
-	glog.V(5).Infof("DetachDisk(...) for PD %q\r\n", c.pdName)
-
-	if err := unmountPDAndRemoveGlobalPath(c); err != nil {
-		glog.Errorf("Error unmounting PD %q: %v", c.pdName, err)
-	}
-
-	// Detach disk asynchronously so that the kubelet sync loop is not blocked.
-	go detachDiskAndVerify(c)
-	return nil
-}
-
 func (util *GCEDiskUtil) DeleteVolume(d *gcePersistentDiskDeleter) error {
-	cloud, err := getCloudProvider()
+	cloud, err := getCloudProvider(d.gcePersistentDisk.plugin.host.GetCloudProvider())
 	if err != nil {
 		return err
 	}
 
 	if err = cloud.DeleteDisk(d.pdName); err != nil {
 		glog.V(2).Infof("Error deleting GCE PD volume %s: %v", d.pdName, err)
+		// GCE cloud provider returns volume.deletedVolumeInUseError when
+		// necessary, no handling needed here.
 		return err
 	}
 	glog.V(2).Infof("Successfully deleted GCE PD volume %s", d.pdName)
 	return nil
 }
 
-func (gceutil *GCEDiskUtil) CreateVolume(c *gcePersistentDiskProvisioner) (volumeID string, volumeSizeGB int, err error) {
-	cloud, err := getCloudProvider()
+// CreateVolume creates a GCE PD.
+// Returns: gcePDName, volumeSizeGB, labels, fsType, error
+func (gceutil *GCEDiskUtil) CreateVolume(c *gcePersistentDiskProvisioner) (string, int, map[string]string, string, error) {
+	cloud, err := getCloudProvider(c.gcePersistentDisk.plugin.host.GetCloudProvider())
 	if err != nil {
-		return "", 0, err
+		return "", 0, nil, "", err
 	}
 
-	name := fmt.Sprintf("kube-dynamic-%s", util.NewUUID())
-	requestBytes := c.options.Capacity.Value()
-	// GCE works with gigabytes, convert to GiB with rounding up
-	requestGB := volume.RoundUpSize(requestBytes, 1024*1024*1024)
+	name := volumeutil.GenerateVolumeName(c.options.ClusterName, c.options.PVName, 63) // GCE PD name can have up to 63 characters
+	capacity := c.options.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)]
+	// GCE PDs are allocated in chunks of GBs (not GiBs)
+	requestGB := volumeutil.RoundUpToGB(capacity)
 
-	// The disk will be created in the zone in which this code is currently running
-	// TODO: We should support auto-provisioning volumes in multiple/specified zones
-	zone, err := cloud.GetZone()
-	if err != nil {
-		glog.V(2).Infof("error getting zone information from GCE: %v", err)
-		return "", 0, err
+	// Apply Parameters.
+	// Values for parameter "replication-type" are canonicalized to lower case.
+	// Values for other parameters are case-insensitive, and we leave validation of these values
+	// to the cloud provider.
+	diskType := ""
+	configuredZone := ""
+	configuredZones := ""
+	zonePresent := false
+	zonesPresent := false
+	replicationType := replicationTypeNone
+	fstype := ""
+	for k, v := range c.options.Parameters {
+		switch strings.ToLower(k) {
+		case "type":
+			diskType = v
+		case "zone":
+			zonePresent = true
+			configuredZone = v
+		case "zones":
+			zonesPresent = true
+			configuredZones = v
+		case "replication-type":
+			if !utilfeature.DefaultFeatureGate.Enabled(features.GCERegionalPersistentDisk) {
+				return "", 0, nil, "",
+					fmt.Errorf("the %q option for volume plugin %v is only supported with the %q Kubernetes feature gate enabled",
+						k, c.plugin.GetPluginName(), features.GCERegionalPersistentDisk)
+			}
+			replicationType = strings.ToLower(v)
+		case volume.VolumeParameterFSType:
+			fstype = v
+		default:
+			return "", 0, nil, "", fmt.Errorf("invalid option %q for volume plugin %s", k, c.plugin.GetPluginName())
+		}
 	}
 
-	err = cloud.CreateDisk(name, zone.FailureDomain, int64(requestGB))
-	if err != nil {
-		glog.V(2).Infof("Error creating GCE PD volume: %v", err)
-		return "", 0, err
+	if zonePresent && zonesPresent {
+		return "", 0, nil, "", fmt.Errorf("the 'zone' and 'zones' StorageClass parameters must not be used at the same time")
 	}
-	glog.V(2).Infof("Successfully created GCE PD volume %s", name)
-	return name, int(requestGB), nil
+
+	if replicationType == replicationTypeRegionalPD && zonePresent {
+		// If a user accidentally types 'zone' instead of 'zones', we want to throw an error
+		// instead of assuming that 'zones' is empty and proceed by randomly selecting zones.
+		return "", 0, nil, "", fmt.Errorf("the '%s' replication type does not support the 'zone' parameter; use 'zones' instead", replicationTypeRegionalPD)
+	}
+
+	// TODO: implement PVC.Selector parsing
+	if c.options.PVC.Spec.Selector != nil {
+		return "", 0, nil, "", fmt.Errorf("claim.Spec.Selector is not supported for dynamic provisioning on GCE")
+	}
+
+	switch replicationType {
+	case replicationTypeRegionalPD:
+		err = createRegionalPD(
+			name,
+			c.options.PVC.Name,
+			diskType,
+			configuredZones,
+			requestGB,
+			c.options.CloudTags,
+			cloud)
+		if err != nil {
+			glog.V(2).Infof("Error creating regional GCE PD volume: %v", err)
+			return "", 0, nil, "", err
+		}
+
+		glog.V(2).Infof("Successfully created Regional GCE PD volume %s", name)
+
+	case replicationTypeNone:
+		var zones sets.String
+		if !zonePresent && !zonesPresent {
+			// 00 - neither "zone" or "zones" specified
+			// Pick a zone randomly selected from all active zones where
+			// Kubernetes cluster has a node.
+			zones, err = cloud.GetAllCurrentZones()
+			if err != nil {
+				glog.V(2).Infof("error getting zone information from GCE: %v", err)
+				return "", 0, nil, "", err
+			}
+		} else if !zonePresent && zonesPresent {
+			// 01 - "zones" specified
+			// Pick a zone randomly selected from specified set.
+			if zones, err = volumeutil.ZonesToSet(configuredZones); err != nil {
+				return "", 0, nil, "", err
+			}
+		} else if zonePresent && !zonesPresent {
+			// 10 - "zone" specified
+			// Use specified zone
+			if err := volumeutil.ValidateZone(configuredZone); err != nil {
+				return "", 0, nil, "", err
+			}
+			zones = make(sets.String)
+			zones.Insert(configuredZone)
+		}
+		zone := volumeutil.ChooseZoneForVolume(zones, c.options.PVC.Name)
+
+		if err := cloud.CreateDisk(
+			name,
+			diskType,
+			zone,
+			int64(requestGB),
+			*c.options.CloudTags); err != nil {
+			glog.V(2).Infof("Error creating single-zone GCE PD volume: %v", err)
+			return "", 0, nil, "", err
+		}
+
+		glog.V(2).Infof("Successfully created single-zone GCE PD volume %s", name)
+
+	default:
+		return "", 0, nil, "", fmt.Errorf("replication-type of '%s' is not supported", replicationType)
+	}
+
+	labels, err := cloud.GetAutoLabelsForPD(name, "" /* zone */)
+	if err != nil {
+		// We don't really want to leak the volume here...
+		glog.Errorf("error getting labels for volume %q: %v", name, err)
+	}
+
+	return name, int(requestGB), labels, fstype, nil
 }
 
-// Attaches the specified persistent disk device to node, verifies that it is attached, and retries if it fails.
-func attachDiskAndVerify(b *gcePersistentDiskBuilder, sdBeforeSet sets.String) (string, error) {
-	devicePaths := getDiskByIdPaths(b.gcePersistentDisk)
-	var gceCloud *gcecloud.GCECloud
-	for numRetries := 0; numRetries < maxRetries; numRetries++ {
-		var err error
-		if gceCloud == nil {
-			gceCloud, err = getCloudProvider()
-			if err != nil || gceCloud == nil {
-				// Retry on error. See issue #11321
-				glog.Errorf("Error getting GCECloudProvider while detaching PD %q: %v", b.pdName, err)
-				time.Sleep(errorSleepDuration)
-				continue
-			}
+// Creates a Regional PD
+func createRegionalPD(
+	diskName string,
+	pvcName string,
+	diskType string,
+	zonesString string,
+	requestGB int64,
+	cloudTags *map[string]string,
+	cloud *gcecloud.GCECloud) error {
+
+	var replicaZones sets.String
+	var err error
+
+	if zonesString == "" {
+		// Consider all zones
+		replicaZones, err = cloud.GetAllCurrentZones()
+		if err != nil {
+			glog.V(2).Infof("error getting zone information from GCE: %v", err)
+			return err
 		}
-
-		if numRetries > 0 {
-			glog.Warningf("Retrying attach for GCE PD %q (retry count=%v).", b.pdName, numRetries)
-		}
-
-		if err := gceCloud.AttachDisk(b.pdName, b.plugin.host.GetHostName(), b.readOnly); err != nil {
-			glog.Errorf("Error attaching PD %q: %v", b.pdName, err)
-			time.Sleep(errorSleepDuration)
-			continue
-		}
-
-		for numChecks := 0; numChecks < maxChecks; numChecks++ {
-			path, err := verifyDevicePath(devicePaths, sdBeforeSet)
-			if err != nil {
-				// Log error, if any, and continue checking periodically. See issue #11321
-				glog.Errorf("Error verifying GCE PD (%q) is attached: %v", b.pdName, err)
-			} else if path != "" {
-				// A device path has successfully been created for the PD
-				glog.Infof("Successfully attached GCE PD %q.", b.pdName)
-				return path, nil
-			}
-
-			// Sleep then check again
-			glog.V(3).Infof("Waiting for GCE PD %q to attach.", b.pdName)
-			time.Sleep(checkSleepDuration)
+	} else {
+		replicaZones, err = volumeutil.ZonesToSet(zonesString)
+		if err != nil {
+			return err
 		}
 	}
 
-	return "", fmt.Errorf("Could not attach GCE PD %q. Timeout waiting for mount paths to be created.", b.pdName)
+	zoneCount := replicaZones.Len()
+	var selectedReplicaZones sets.String
+	if zoneCount < maxRegionalPDZones {
+		return fmt.Errorf("cannot specify only %d zone(s) for Regional PDs.", zoneCount)
+	} else if zoneCount == maxRegionalPDZones {
+		selectedReplicaZones = replicaZones
+	} else {
+		// Must randomly select zones
+		selectedReplicaZones = volumeutil.ChooseZonesForVolume(
+			replicaZones, pvcName, maxRegionalPDZones)
+	}
+
+	if err = cloud.CreateRegionalDisk(
+		diskName,
+		diskType,
+		selectedReplicaZones,
+		int64(requestGB),
+		*cloudTags); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // Returns the first path that exists, or empty string if none exist.
@@ -210,7 +268,7 @@ func verifyDevicePath(devicePaths []string, sdBeforeSet sets.String) (string, er
 	}
 
 	for _, path := range devicePaths {
-		if pathExists, err := pathExists(path); err != nil {
+		if pathExists, err := volumeutil.PathExists(path); err != nil {
 			return "", fmt.Errorf("Error checking if path exists: %v", err)
 		} else if pathExists {
 			return path, nil
@@ -218,73 +276,6 @@ func verifyDevicePath(devicePaths []string, sdBeforeSet sets.String) (string, er
 	}
 
 	return "", nil
-}
-
-// Detaches the specified persistent disk device from node, verifies that it is detached, and retries if it fails.
-// This function is intended to be called asynchronously as a go routine.
-func detachDiskAndVerify(c *gcePersistentDiskCleaner) {
-	glog.V(5).Infof("detachDiskAndVerify(...) for pd %q. Will block for pending operations", c.pdName)
-	defer runtime.HandleCrash()
-
-	// Block execution until any pending attach/detach operations for this PD have completed
-	attachDetachMutex.LockKey(c.pdName)
-	defer attachDetachMutex.UnlockKey(c.pdName)
-
-	glog.V(5).Infof("detachDiskAndVerify(...) for pd %q. Awake and ready to execute.", c.pdName)
-
-	devicePaths := getDiskByIdPaths(c.gcePersistentDisk)
-	var gceCloud *gcecloud.GCECloud
-	for numRetries := 0; numRetries < maxRetries; numRetries++ {
-		var err error
-		if gceCloud == nil {
-			gceCloud, err = getCloudProvider()
-			if err != nil || gceCloud == nil {
-				// Retry on error. See issue #11321
-				glog.Errorf("Error getting GCECloudProvider while detaching PD %q: %v", c.pdName, err)
-				time.Sleep(errorSleepDuration)
-				continue
-			}
-		}
-
-		if numRetries > 0 {
-			glog.Warningf("Retrying detach for GCE PD %q (retry count=%v).", c.pdName, numRetries)
-		}
-
-		if err := gceCloud.DetachDisk(c.pdName, c.plugin.host.GetHostName()); err != nil {
-			glog.Errorf("Error detaching PD %q: %v", c.pdName, err)
-			time.Sleep(errorSleepDuration)
-			continue
-		}
-
-		for numChecks := 0; numChecks < maxChecks; numChecks++ {
-			allPathsRemoved, err := verifyAllPathsRemoved(devicePaths)
-			if err != nil {
-				// Log error, if any, and continue checking periodically.
-				glog.Errorf("Error verifying GCE PD (%q) is detached: %v", c.pdName, err)
-			} else if allPathsRemoved {
-				// All paths to the PD have been succefully removed
-				unmountPDAndRemoveGlobalPath(c)
-				glog.Infof("Successfully detached GCE PD %q.", c.pdName)
-				return
-			}
-
-			// Sleep then check again
-			glog.V(3).Infof("Waiting for GCE PD %q to detach.", c.pdName)
-			time.Sleep(checkSleepDuration)
-		}
-
-	}
-
-	glog.Errorf("Failed to detach GCE PD %q. One or more mount paths was not removed.", c.pdName)
-}
-
-// Unmount the global PD mount, which should be the only one, and delete it.
-func unmountPDAndRemoveGlobalPath(c *gcePersistentDiskCleaner) error {
-	globalPDPath := makeGlobalPDName(c.plugin.host, c.pdName)
-
-	err := c.mounter.Unmount(globalPDPath)
-	os.Remove(globalPDPath)
-	return err
 }
 
 // Returns the first path that exists, or empty string if none exist.
@@ -295,7 +286,7 @@ func verifyAllPathsRemoved(devicePaths []string) (bool, error) {
 			// udevadm errors should not block disk detachment, log and continue
 			glog.Errorf("%v", err)
 		}
-		if exists, err := pathExists(path); err != nil {
+		if exists, err := volumeutil.PathExists(path); err != nil {
 			return false, fmt.Errorf("Error checking if path exists: %v", err)
 		} else {
 			allPathsRemoved = allPathsRemoved && !exists
@@ -306,46 +297,43 @@ func verifyAllPathsRemoved(devicePaths []string) (bool, error) {
 }
 
 // Returns list of all /dev/disk/by-id/* paths for given PD.
-func getDiskByIdPaths(pd *gcePersistentDisk) []string {
+func getDiskByIdPaths(pdName string, partition string) []string {
 	devicePaths := []string{
-		path.Join(diskByIdPath, diskGooglePrefix+pd.pdName),
-		path.Join(diskByIdPath, diskScsiGooglePrefix+pd.pdName),
+		path.Join(diskByIdPath, diskGooglePrefix+pdName),
+		path.Join(diskByIdPath, diskScsiGooglePrefix+pdName),
 	}
 
-	if pd.partition != "" {
+	if partition != "" {
 		for i, path := range devicePaths {
-			devicePaths[i] = path + diskPartitionSuffix + pd.partition
+			devicePaths[i] = path + diskPartitionSuffix + partition
 		}
 	}
 
 	return devicePaths
 }
 
-// Checks if the specified path exists
-func pathExists(path string) (bool, error) {
-	_, err := os.Stat(path)
-	if err == nil {
-		return true, nil
-	} else if os.IsNotExist(err) {
-		return false, nil
-	} else {
-		return false, err
-	}
-}
-
 // Return cloud provider
-func getCloudProvider() (*gcecloud.GCECloud, error) {
-	gceCloudProvider, err := cloudprovider.GetCloudProvider("gce", nil)
-	if err != nil || gceCloudProvider == nil {
-		return nil, err
+func getCloudProvider(cloudProvider cloudprovider.Interface) (*gcecloud.GCECloud, error) {
+	var err error
+	for numRetries := 0; numRetries < maxRetries; numRetries++ {
+		gceCloudProvider, ok := cloudProvider.(*gcecloud.GCECloud)
+		if !ok || gceCloudProvider == nil {
+			// Retry on error. See issue #11321
+			glog.Errorf("Failed to get GCE Cloud Provider. plugin.host.GetCloudProvider returned %v instead", cloudProvider)
+			time.Sleep(errorSleepDuration)
+			continue
+		}
+
+		return gceCloudProvider, nil
 	}
 
-	// The conversion must be safe otherwise bug in GetCloudProvider()
-	return gceCloudProvider.(*gcecloud.GCECloud), nil
+	return nil, fmt.Errorf("Failed to get GCE GCECloudProvider with error %v", err)
 }
 
-// Calls "udevadm trigger --action=change" for newly created "/dev/sd*" drives (exist only in after set).
-// This is workaround for Issue #7972. Once the underlying issue has been resolved, this may be removed.
+// Triggers the application of udev rules by calling "udevadm trigger
+// --action=change" for newly created "/dev/sd*" drives (exist only in
+// after set). This is workaround for Issue #7972. Once the underlying
+// issue has been resolved, this may be removed.
 func udevadmChangeToNewDrives(sdBeforeSet sets.String) error {
 	sdAfter, err := filepath.Glob(diskSDPattern)
 	if err != nil {
@@ -362,7 +350,7 @@ func udevadmChangeToNewDrives(sdBeforeSet sets.String) error {
 }
 
 // Calls "udevadm trigger --action=change" on the specified drive.
-// drivePath must be the the block device path to trigger on, in the format "/dev/sd*", or a symlink to it.
+// drivePath must be the block device path to trigger on, in the format "/dev/sd*", or a symlink to it.
 // This is workaround for Issue #7972. Once the underlying issue has been resolved, this may be removed.
 func udevadmChangeToDrive(drivePath string) error {
 	glog.V(5).Infof("udevadmChangeToDrive: drive=%q", drivePath)
@@ -389,4 +377,14 @@ func udevadmChangeToDrive(drivePath string) error {
 		return fmt.Errorf("udevadmChangeToDrive: udevadm trigger failed for drive %q with %v.", drive, err)
 	}
 	return nil
+}
+
+// Checks whether the given GCE PD volume spec is associated with a regional PD.
+func isRegionalPD(spec *volume.Spec) bool {
+	if spec.PersistentVolume != nil {
+		zonesLabel := spec.PersistentVolume.Labels[kubeletapis.LabelZoneFailureDomain]
+		zones := strings.Split(zonesLabel, kubeletapis.LabelMultiZoneDelimiter)
+		return len(zones) > 1
+	}
+	return false
 }

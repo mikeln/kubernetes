@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,48 +18,72 @@ package cmd
 
 import (
 	"fmt"
-	"io"
-	"os"
 	"sort"
 
 	"github.com/spf13/cobra"
 
-	unversioned_client "k8s.io/kubernetes/pkg/client/unversioned"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/discovery"
+	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
+	"k8s.io/kubernetes/pkg/kubectl/genericclioptions"
+	"k8s.io/kubernetes/pkg/kubectl/util/i18n"
 )
 
-func NewCmdApiVersions(f *cmdutil.Factory, out io.Writer) *cobra.Command {
+var (
+	apiversionsExample = templates.Examples(i18n.T(`
+		# Print the supported API versions
+		kubectl api-versions`))
+)
+
+type ApiVersionsOptions struct {
+	discoveryClient discovery.CachedDiscoveryInterface
+
+	genericclioptions.IOStreams
+}
+
+func NewApiVersionsOptions(ioStreams genericclioptions.IOStreams) *ApiVersionsOptions {
+	return &ApiVersionsOptions{
+		IOStreams: ioStreams,
+	}
+}
+
+func NewCmdApiVersions(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobra.Command {
+	o := NewApiVersionsOptions(ioStreams)
 	cmd := &cobra.Command{
-		Use: "api-versions",
-		// apiversions is deprecated.
-		Aliases: []string{"apiversions"},
-		Short:   "Print the supported API versions on the server, in the form of \"group/version\".",
+		Use:     "api-versions",
+		Short:   "Print the supported API versions on the server, in the form of \"group/version\"",
+		Long:    "Print the supported API versions on the server, in the form of \"group/version\"",
+		Example: apiversionsExample,
 		Run: func(cmd *cobra.Command, args []string) {
-			err := RunApiVersions(f, out)
-			cmdutil.CheckErr(err)
+			cmdutil.CheckErr(o.Complete(f))
+			cmdutil.CheckErr(o.RunApiVersions())
 		},
 	}
 	return cmd
 }
 
-func RunApiVersions(f *cmdutil.Factory, w io.Writer) error {
-	if len(os.Args) > 1 && os.Args[1] == "apiversions" {
-		printDeprecationWarning("api-versions", "apiversions")
-	}
-
-	client, err := f.Client()
+func (o *ApiVersionsOptions) Complete(f cmdutil.Factory) error {
+	var err error
+	o.discoveryClient, err = f.DiscoveryClient()
 	if err != nil {
 		return err
 	}
+	return nil
+}
 
-	groupList, err := client.Discovery().ServerGroups()
+func (o *ApiVersionsOptions) RunApiVersions() error {
+	// Always request fresh data from the server
+	o.discoveryClient.Invalidate()
+
+	groupList, err := o.discoveryClient.ServerGroups()
 	if err != nil {
 		return fmt.Errorf("Couldn't get available api versions from server: %v\n", err)
 	}
-	apiVersions := unversioned_client.ExtractGroupVersions(groupList)
+	apiVersions := metav1.ExtractGroupVersions(groupList)
 	sort.Strings(apiVersions)
 	for _, v := range apiVersions {
-		fmt.Fprintln(w, v)
+		fmt.Fprintln(o.Out, v)
 	}
 	return nil
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,19 +19,19 @@ package securitycontext
 import (
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/api/core/v1"
 )
 
 func TestParseSELinuxOptions(t *testing.T) {
 	cases := []struct {
 		name     string
 		input    string
-		expected *api.SELinuxOptions
+		expected *v1.SELinuxOptions
 	}{
 		{
 			name:  "simple",
 			input: "user_t:role_t:type_t:s0",
-			expected: &api.SELinuxOptions{
+			expected: &v1.SELinuxOptions{
 				User:  "user_t",
 				Role:  "role_t",
 				Type:  "type_t",
@@ -41,7 +41,7 @@ func TestParseSELinuxOptions(t *testing.T) {
 		{
 			name:  "simple + categories",
 			input: "user_t:role_t:type_t:s0:c0",
-			expected: &api.SELinuxOptions{
+			expected: &v1.SELinuxOptions{
 				User:  "user_t",
 				Role:  "role_t",
 				Type:  "type_t",
@@ -69,7 +69,7 @@ func TestParseSELinuxOptions(t *testing.T) {
 	}
 }
 
-func compareContexts(name string, ex, ac *api.SELinuxOptions, t *testing.T) {
+func compareContexts(name string, ex, ac *v1.SELinuxOptions, t *testing.T) {
 	if e, a := ex.User, ac.User; e != a {
 		t.Errorf("%v: expected user: %v, got: %v", name, e, a)
 	}
@@ -84,121 +84,40 @@ func compareContexts(name string, ex, ac *api.SELinuxOptions, t *testing.T) {
 	}
 }
 
-func TestHaRootUID(t *testing.T) {
-	var nonRoot int64 = 1
-	var root int64 = 0
+func TestAddNoNewPrivileges(t *testing.T) {
+	pfalse := false
+	ptrue := true
 
 	tests := map[string]struct {
-		container *api.Container
-		expect    bool
+		sc     *v1.SecurityContext
+		expect bool
 	}{
-		"nil sc": {
-			container: &api.Container{SecurityContext: nil},
+		"allowPrivilegeEscalation nil security context nil": {
+			sc:     nil,
+			expect: false,
 		},
-		"nil runAsuser": {
-			container: &api.Container{
-				SecurityContext: &api.SecurityContext{
-					RunAsUser: nil,
-				},
+		"allowPrivilegeEscalation nil": {
+			sc: &v1.SecurityContext{
+				AllowPrivilegeEscalation: nil,
 			},
+			expect: false,
 		},
-		"runAsUser non-root": {
-			container: &api.Container{
-				SecurityContext: &api.SecurityContext{
-					RunAsUser: &nonRoot,
-				},
-			},
-		},
-		"runAsUser root": {
-			container: &api.Container{
-				SecurityContext: &api.SecurityContext{
-					RunAsUser: &root,
-				},
+		"allowPrivilegeEscalation false": {
+			sc: &v1.SecurityContext{
+				AllowPrivilegeEscalation: &pfalse,
 			},
 			expect: true,
+		},
+		"allowPrivilegeEscalation true": {
+			sc: &v1.SecurityContext{
+				AllowPrivilegeEscalation: &ptrue,
+			},
+			expect: false,
 		},
 	}
 
 	for k, v := range tests {
-		actual := HasRootUID(v.container)
-		if actual != v.expect {
-			t.Errorf("%s failed, expected %t but received %t", k, v.expect, actual)
-		}
-	}
-}
-
-func TestHasRunAsUser(t *testing.T) {
-	var runAsUser int64 = 0
-
-	tests := map[string]struct {
-		container *api.Container
-		expect    bool
-	}{
-		"nil sc": {
-			container: &api.Container{SecurityContext: nil},
-		},
-		"nil runAsUser": {
-			container: &api.Container{
-				SecurityContext: &api.SecurityContext{
-					RunAsUser: nil,
-				},
-			},
-		},
-		"valid runAsUser": {
-			container: &api.Container{
-				SecurityContext: &api.SecurityContext{
-					RunAsUser: &runAsUser,
-				},
-			},
-			expect: true,
-		},
-	}
-
-	for k, v := range tests {
-		actual := HasRunAsUser(v.container)
-		if actual != v.expect {
-			t.Errorf("%s failed, expected %t but received %t", k, v.expect, actual)
-		}
-	}
-}
-
-func TestHasRootRunAsUser(t *testing.T) {
-	var nonRoot int64 = 1
-	var root int64 = 0
-
-	tests := map[string]struct {
-		container *api.Container
-		expect    bool
-	}{
-		"nil sc": {
-			container: &api.Container{SecurityContext: nil},
-		},
-		"nil runAsuser": {
-			container: &api.Container{
-				SecurityContext: &api.SecurityContext{
-					RunAsUser: nil,
-				},
-			},
-		},
-		"runAsUser non-root": {
-			container: &api.Container{
-				SecurityContext: &api.SecurityContext{
-					RunAsUser: &nonRoot,
-				},
-			},
-		},
-		"runAsUser root": {
-			container: &api.Container{
-				SecurityContext: &api.SecurityContext{
-					RunAsUser: &root,
-				},
-			},
-			expect: true,
-		},
-	}
-
-	for k, v := range tests {
-		actual := HasRootRunAsUser(v.container)
+		actual := AddNoNewPrivileges(v.sc)
 		if actual != v.expect {
 			t.Errorf("%s failed, expected %t but received %t", k, v.expect, actual)
 		}
